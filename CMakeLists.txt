@@ -1,0 +1,16 @@
+cmake_minimum_required(VERSION 3.28.0)
+project(cpp_sk VERSION 0.1.0 LANGUAGES C CXX)
+set(CMAKE_CXX_STANDARD 23)  
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+
+add_library(cpp_sk cpp_sk.cpp)
+target_include_directories(cpp_sk PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/3rd/yalantinglibs/include)
+target_include_directories(cpp_sk PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/3rd/yalantinglibs/include/ylt/thirdparty)
+target_include_directories(cpp_sk PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/3rd/yalantinglibs/include/ylt/standalone)
+
+message(STATUS "path ${CMAKE_CURRENT_SOURCE_DIR}/3rd/yalantinglibs/include")
+
+add_executable(test main.cpp)
+target_link_libraries(test PRIVATE cpp_sk)
