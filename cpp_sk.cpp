@@ -1,5 +1,9 @@
 #include "cpp_sk.h"
+#include "logger.h"
+#include <chrono>
+#include <cmath>
 #include <cstdint>
+#include <ctime>
 #include <memory>
 #include <mutex>
 #include <sys/types.h>
@@ -33,7 +37,7 @@ size_t message_queue::length() {
 
 int message_queue::mq_overload() { return std::exchange(overload, 0); }
 
-void message_queue::mq_push(skynet_message& message) {
+void message_queue::mq_push(skynet_message &message) {
   std::lock_guard guard(lock);
   queue[tail] = std::move(message);
   if (++tail >= queue.size()) {
@@ -111,7 +115,7 @@ message_queue *global_queue::pop() {
   auto mq = head;
   if (mq) {
     head = mq->next;
-    if (head->next == nullptr) {
+    if (head == nullptr) {
       assert(mq == tail);
       tail = nullptr;
     }
@@ -215,45 +219,267 @@ bool handle_storage_t::handle_namehandle(handle_t handle, const char *name_) {
   return it.second;
 }
 
-context_ptr_t context_t::create(std::unique_ptr<module_base_t> instance_, const char* param) {
-    auto ctx = std::make_shared<context_t>();
-    ctx->instance = std::move(instance_);
-    ctx->session_id = 0;
-    ctx->init = false;
-    ctx->endless = false;
-    
-    ctx->cpu_cost = 0;
-    ctx->cpu_start = 0;
-    ctx->message_count = 0;
-    ctx->profile = node_t::ins().profile;
+context_ptr_t context_t::create(std::string_view name, std::string_view param) {
+  auto ctx = std::make_shared<context_t>();
+  ctx->instance.reset(module_t::create(name));
+  ctx->cb = nullptr;
+  ctx->session_id = 0;
+  ctx->init = false;
+  ctx->endless = false;
 
-    ctx->handle = 0;
-    ctx->handle = handle_storage_t::ins().handle_register(ctx);
-    ctx->queue = std::make_unique<message_queue>(ctx->handle);
-    
-    if (ctx->instance->init(ctx, param)) {
-        ctx->init = true;
-        global_queue::ins().push(ctx->queue.get());
-        if (ctx.use_count() != 1) {
-            skynet_server::error(ctx.get(), std::format("LAUNCH {} {}", ctx->instance->type_name(), param ? param : ""));
-        }
-    } else {
-        skynet_server::error(ctx.get(), std::format("FAILED LAUNCH {}", ctx->instance->type_name()));
-        handle_storage_t::ins().handle_retire(ctx->handle);
-        ctx->queue->mq_release([source = ctx->handle](skynet_message* m){
-            assert(source!=0);
+  ctx->cpu_cost = 0;
+  ctx->cpu_start = 0;
+  ctx->message_count = 0;
+  ctx->profile = node_t::ins().profile;
 
-        });
+  ctx->handle = 0;
+  ctx->handle = handle_storage_t::ins().handle_register(ctx);
+  ctx->queue = std::make_unique<message_queue>(ctx->handle);
+
+  if (ctx->instance->init(ctx, param)) {
+    ctx->init = true;
+    global_queue::ins().push(ctx->queue.get());
+    if (ctx.use_count() != 1) {
+      skynet_app::error(
+          ctx.get(),
+          std::format("LAUNCH {} {}", ctx->instance->type_name(), param));
     }
+  } else {
+    skynet_app::error(
+        ctx.get(), std::format("FAILED LAUNCH {}", ctx->instance->type_name()));
+    handle_storage_t::ins().handle_retire(ctx->handle);
+    ctx->queue->mq_release([source = ctx->handle](skynet_message *m) {
+      assert(source != 0);
+      skynet_app::send(nullptr, source, m->source, PTYPE_ERROR, m->session, nullptr, 0);
+    });
+  }
 
-    return ctx;
+  return ctx;
 }
 
-context_t::context_t() {
-    node_t::ins().total++;
-}
+context_t::context_t() { node_t::ins().total++; }
 
 context_t::~context_t() {
   instance.reset();
   node_t::ins().total--;
+}
+
+void context_t::dispatch(skynet_message& msg) {
+  int type = msg.sz >> MESSAGE_TYPE_SHIFT;
+	size_t sz = msg.sz & MESSAGE_TYPE_MASK;
+  message_count++;
+
+  int reserve_msg = cb(
+    this, type, msg.session, msg.source, msg.data, msg.sz
+  );
+  if (reserve_msg) {
+    msg.reserved_data();
+  }
+}
+
+std::unordered_map<std::string, module_t::creator_func_t, string_hash,
+                   std::equal_to<>>
+    module_t::gMap;
+
+void module_t::register_module_func(std::string name,
+                                    module_t::creator_func_t func) {
+  if (auto it = gMap.find(name); it == gMap.end()) {
+    gMap[std::move(name)] = func;
+  }
+}
+
+module_base_t *module_t::create(std::string_view name) {
+  if (name == "logger") {
+    return new logger();
+  }
+  return nullptr;
+}
+
+void skynet_monitor::check() {
+  if (version == check_version) {
+    if (destination) {
+      skynet_app::context_endless(destination);
+      skynet_app::error(nullptr,
+                           std::format("A message from {:08x} to {:08x} maybe "
+                                       "in an endless loop (version = {})",
+                                       source, destination, version.load()));
+    }
+  } else {
+    check_version = version;
+  }
+}
+
+void skynet_monitor::trigger(uint32_t source_, uint32_t destination_) {
+  source = source_;
+  destination = destination_;
+  version++;
+}
+
+void skynet_app::error(context_t *context, std::string_view msg) {
+  static handle_t logger = handle_storage_t::ins().handle_finename("logger");
+  if (logger == 0) {
+    logger = handle_storage_t::ins().handle_finename("logger");
+  }
+  if (logger == 0) {
+    return;
+  }
+  skynet_message smsg;
+  if (context == NULL) {
+    smsg.source = 0;
+  } else {
+    smsg.source = context->handle;
+  }
+  smsg.session = 0;
+  smsg.data = (char *)std::malloc(msg.size() + 1);
+  smsg.data[msg.size()] = 0;
+  std::copy(msg.begin(), msg.end(), smsg.data);
+  smsg.sz = msg.size() | ((uint32_t)PTYPE_TEXT << MESSAGE_TYPE_SHIFT);
+  context_push(logger, smsg);
+}
+
+bool skynet_app::context_push(handle_t handle, skynet_message &msg) {
+  auto ctx = handle_storage_t::ins().handle_grab(handle);
+  if (!ctx) {
+    return false;
+  }
+  ctx->queue->mq_push(msg);
+  return true;
+}
+
+timer::timer() {
+  using namespace std::chrono;
+  time_ = 0;
+
+  current_point_ = clock_t::now();
+  constexpr time_point zero{};
+  auto diff = current_point_ - zero;
+  starttime_ = duration_cast<seconds>(diff).count();
+  current_ = duration_cast<centisecond>(current_point_ - clock_t::from_time_t(starttime_)).count();
+}
+
+void timer::update() {
+  auto now = clock_t::now();
+  auto diff = std::chrono::duration_cast<centisecond>(now - current_point_);
+  if (now < current_point_) {
+    auto zone = std::chrono::current_zone();
+    skynet_app::error(nullptr,
+                         std::format("time diff error: change from {} to {}",
+                          std::chrono::zoned_time{zone, now}, std::chrono::zoned_time{zone, current_point_}));
+    current_point_ = now;
+  } else if(diff.count() > 0){
+    current_point_ = now;
+    current_ += diff.count();
+    for (int i = 0; i < diff.count(); ++i) {
+      timer_update();
+    }
+  }
+}
+
+void timer::timer_update() {
+  lock_.lock();
+  timer_execute();
+  timer_shift();
+  timer_execute();
+  lock_.unlock();
+}
+void timer::timer_execute() {
+  int idx = time_ & TIME_NEAR_MASK;
+  while(near_[idx].head.next) {
+    auto current = near_[idx].clear();
+    lock_.unlock();
+    dispatch(std::move(current));
+    lock_.lock();
+  }
+}
+void timer::timer_shift() {
+  int mask = TIME_NEAR;
+  auto ct = ++time_;
+  if (ct == 0) {
+    move_list(3, 0);
+  } else {
+    uint32_t time_ = ct >> TIME_NEAR_SHIFT;
+    int i = 0;
+    while((ct & (mask - 1)) == 0) {
+      int idx = time_ & TIME_NEAR_MASK;
+      if (idx != 0) {
+        move_list(i, idx);
+        break;
+      }
+      mask <<= TIME_NEAR_SHIFT;
+      time_ >>= TIME_NEAR_SHIFT;
+      ++i;
+    }
+  }
+}
+
+int timer::timeout(handle_t handle, int32_t timeout, int session) {
+  if (timeout <= 0) {
+    skynet_message message;
+    message.source = 0;
+    message.session = session;
+    message.data = NULL;
+    message.sz = (size_t)PTYPE_RESPONSE << MESSAGE_TYPE_SHIFT;
+    if (!skynet_app::context_push(handle, message)) {
+      return -1;
+    }
+  } else {
+    auto node = std::make_unique<timer_node_event>();
+    node->handle = handle;
+    node->session = session;
+    timer_add(std::move(node), timeout);
+  }
+  return session;
+}
+
+void timer::timer_add(std::unique_ptr<timer_node_event> node, int32_t timeout) {
+  std::lock_guard guard(lock_);
+  node->expire = time_ + timeout;
+  add_node(std::move(node));
+}
+
+void timer::add_node(std::unique_ptr<timer_node_event> node) {
+  uint32_t time=node->expire;
+  uint32_t current_time = time_;
+  if ((time|TIME_NEAR_MASK) == (current_time|TIME_NEAR_MASK)) {
+    std::cout << "add node:" << node->expire << std::endl;
+    near_[time&TIME_NEAR_MASK].link(std::move(node));
+  } else {
+    int i;
+    uint32_t mask = TIME_NEAR << TIME_LEVEL_SHIFT;
+    for(i=0;i<3;++i) {
+      if ((time|(mask-1)) == (current_time|(mask-1))) {
+        break;
+      }
+      mask <<= TIME_LEVEL_SHIFT;
+    }
+    /*
+      当 time 溢出了，只要不溢出太严重到，又跟 time_ 相差接近 TIME_NEAR
+      那么最终 (time|(mask-1)) 就不会等于 (current_time|(mask-1))
+      那么最终会走到 level:3 层级，并且 (time>>(TIME_NEAR_SHIFT + i*TIME_LEVEL_SHIFT)) & TIME_LEVEL_MASK) = 0
+      即：所有溢出都统统存入 t_[3][0], 在shift 的时候，当 time_ = 0，即也溢出时，会重新将这些node 投放一遍
+    */
+    t_[i][((time>>(TIME_NEAR_SHIFT + i*TIME_LEVEL_SHIFT)) & TIME_LEVEL_MASK)].link(std::move(node));
+  }
+}
+
+void timer::move_list(int level, int idx) {
+  auto current = t_[level][idx].clear();
+  while(current) {
+    auto temp = std::move(current->next);
+    add_node(std::move(current));
+    current = std::move(temp);
+  }
+}
+
+void timer::dispatch(std::unique_ptr<timer_node_event> current) {
+  do {
+    skynet_message message;
+    message.source = 0;
+    message.session = current->session;
+    message.data = nullptr;
+    message.sz = (size_t)PTYPE_RESPONSE << MESSAGE_TYPE_SHIFT;
+
+    skynet_app::context_push(current->handle, message);
+    current = std::move(current->next);
+  } while(current);
 }
