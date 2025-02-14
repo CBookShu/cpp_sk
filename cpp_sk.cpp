@@ -1,8 +1,10 @@
 #include "cpp_sk.h"
 #include "logger.h"
+#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <ctime>
 #include <memory>
 #include <mutex>
@@ -15,7 +17,7 @@ static constexpr int DEFAULT_QUEUE_SIZE = 64;
 static constexpr int MQ_OVERLOAD = 1024;
 
 message_queue::message_queue(handle_t handle_)
-    : handle(handle_), head(0), tail(0), release(false), in_global(false),
+    : handle(handle_), head(0), tail(0), release(false), in_global(true),
       overload(0), overload_threshold(MQ_OVERLOAD), queue(DEFAULT_QUEUE_SIZE),
       next(nullptr) {}
 
@@ -240,13 +242,11 @@ context_ptr_t context_t::create(std::string_view name, std::string_view param) {
     ctx->init = true;
     global_queue::ins().push(ctx->queue.get());
     if (ctx.use_count() != 1) {
-      skynet_app::error(
-          ctx.get(),
-          std::format("LAUNCH {} {}", ctx->instance->type_name(), param));
+      skynet_app::error(ctx.get(),"LAUNCH {} {}", name, param);
     }
   } else {
     skynet_app::error(
-        ctx.get(), std::format("FAILED LAUNCH {}", ctx->instance->type_name()));
+        ctx.get(), "FAILED LAUNCH {}", name);
     handle_storage_t::ins().handle_retire(ctx->handle);
     ctx->queue->mq_release([source = ctx->handle](skynet_message *m) {
       assert(source != 0);
@@ -289,8 +289,8 @@ void module_t::register_module_func(std::string name,
 }
 
 module_base_t *module_t::create(std::string_view name) {
-  if (name == "logger") {
-    return new logger();
+  if(auto it = gMap.find(name); it != gMap.end()) {
+    return it->second();
   }
   return nullptr;
 }
@@ -299,10 +299,9 @@ void skynet_monitor::check() {
   if (version == check_version) {
     if (destination) {
       skynet_app::context_endless(destination);
-      skynet_app::error(nullptr,
-                           std::format("A message from {:08x} to {:08x} maybe "
+      skynet_app::error(nullptr,"A message from {:08x} to {:08x} maybe "
                                        "in an endless loop (version = {})",
-                                       source, destination, version.load()));
+                                       source, destination, version.load());
     }
   } else {
     check_version = version;
@@ -315,28 +314,6 @@ void skynet_monitor::trigger(uint32_t source_, uint32_t destination_) {
   version++;
 }
 
-void skynet_app::error(context_t *context, std::string_view msg) {
-  static handle_t logger = handle_storage_t::ins().handle_finename("logger");
-  if (logger == 0) {
-    logger = handle_storage_t::ins().handle_finename("logger");
-  }
-  if (logger == 0) {
-    return;
-  }
-  skynet_message smsg;
-  if (context == NULL) {
-    smsg.source = 0;
-  } else {
-    smsg.source = context->handle;
-  }
-  smsg.session = 0;
-  smsg.data = (char *)std::malloc(msg.size() + 1);
-  smsg.data[msg.size()] = 0;
-  std::copy(msg.begin(), msg.end(), smsg.data);
-  smsg.sz = msg.size() | ((uint32_t)PTYPE_TEXT << MESSAGE_TYPE_SHIFT);
-  context_push(logger, smsg);
-}
-
 bool skynet_app::context_push(handle_t handle, skynet_message &msg) {
   auto ctx = handle_storage_t::ins().handle_grab(handle);
   if (!ctx) {
@@ -344,6 +321,188 @@ bool skynet_app::context_push(handle_t handle, skynet_message &msg) {
   }
   ctx->queue->mq_push(msg);
   return true;
+}
+
+static void
+_filter_args(context_t * context, int type, int *session, void ** data, size_t * sz) {
+  int needcopy = !(type & PTYPE_TAG_DONTCOPY);
+  int allocsession = type & PTYPE_TAG_ALLOCSESSION;
+  type &= 0xff;
+
+  if (allocsession) {
+    assert(*session == 0);
+    *session = context->newsession();
+  }
+  if (needcopy && *data) {
+    char * msg = (char*)std::malloc(*sz+1);
+    memcpy(msg, *data, *sz);
+    msg[*sz] = '\0';
+    *data = msg;
+  }
+  *sz |= (size_t)type << MESSAGE_TYPE_SHIFT;
+}
+
+int skynet_app::send(context_t* context, uint32_t source, uint32_t destination , int type, int session, void * data, size_t sz) {
+  if ((sz & MESSAGE_TYPE_MASK) != sz) {
+    skynet_app::error(context, "The message to {:x} is too large", destination);
+    if (type & PTYPE_TAG_DONTCOPY) {
+      std::free(data);
+    }
+    return -2;
+  }
+
+  _filter_args(context, type, &session, (void **)&data, &sz);
+
+  if (source == 0) {
+		source = context->handle;
+	}
+
+  if (destination == 0) {
+    if (data) {
+      skynet_app::error(context, "Destination address can't be 0");
+      std::free(data);
+      return -1;
+    }
+  
+    return session;
+  }
+
+  if(harbor_t::ins().message_isremote(destination)) {
+    // TODO: 跨进程
+  } else {
+    struct skynet_message smsg;
+    smsg.source = source;
+    smsg.session = session;
+    smsg.data = (char*)data;
+    smsg.sz = sz;
+    if (!skynet_app::context_push(destination, smsg)) {
+      std::free(data);
+      return -1;
+    }
+  }
+  return session;
+}
+
+// int skynet_app::context_send(context_t *context, void * msg, size_t sz, uint32_t source, int type, int session) {
+//     struct skynet_message smsg;
+//     smsg.source = source;
+//     smsg.session = session;
+//     smsg.data = (char*)msg;
+//     smsg.sz = sz | (size_t)type << MESSAGE_TYPE_SHIFT;
+//     context->queue->mq_push(smsg);
+// }
+
+void skynet_app::context_endless(handle_t handle) {
+  auto ctx = handle_storage_t::ins().handle_grab(handle);
+  if (!ctx) {
+    return;
+  }
+  ctx->endless = true;
+}
+
+void skynet_app::start_monitor(std::thread &t, monitor &m) {
+  for (auto &_m : m.m) {
+    _m = std::make_unique<skynet_monitor>();
+  }
+  t = std::thread([&m]() {
+    for (;;) {
+      CHECK_ABORT
+      for (auto &_m : m.m) {
+        _m->check();
+      }
+      for (int i = 0; i < 5; i++) {
+        CHECK_ABORT
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+      }
+    }
+  });
+}
+
+void skynet_app::start_timer(std::thread& t, monitor &m) {
+  t = std::thread([&m](){
+    int count = 0;
+    for(;;) {
+      timer::ins().update();
+      CHECK_ABORT
+      m.wakeup(m.count - 1);
+      std::this_thread::sleep_for(
+        std::chrono::microseconds(2500)
+      );
+    }
+
+    {
+      std::lock_guard guard(m.mutex);
+      m.quit = true;
+      m.cond.notify_all();
+    }
+
+  });
+}
+
+message_queue* skynet_app::context_message_dispatch(skynet_monitor* m, message_queue* q, int weight) {
+  if (q == nullptr) {
+    q = global_queue::ins().pop();
+    if (q == nullptr) {
+      return nullptr;
+    }
+  }
+  handle_t handle = q->handle;
+  auto ctx = handle_storage_t::ins().handle_grab(handle);
+  if (!ctx) {
+    q->mq_release([source = handle](skynet_message* m){
+      assert(source);
+      skynet_app::send(nullptr, source, m->source, PTYPE_ERROR, m->session, nullptr, 0);
+    });
+  }
+
+  int i,n=1;
+  for(i=0;i<n;i++) {
+    auto msg = q->mq_pop();
+    if (!msg) {
+      return global_queue::ins().pop();
+    } else if(i == 0 && weight >= 0) {
+      n = q->length();
+      n >>= weight;
+    }
+
+    int overload = q->mq_overload();
+    if (overload) {
+      skynet_app::error(ctx.get(), "May overlad, message queue length = {}", overload);
+    }
+
+    m->trigger(msg.value().source, handle);
+
+    if (ctx->cb) {
+      ctx->dispatch(msg.value());
+    }
+
+    m->trigger(0, 0);
+  }
+
+  assert(q == ctx->queue.get());
+  auto* nq = global_queue::ins().pop();
+  if (nq) {
+    global_queue::ins().push(q);
+    q = nq;
+  }
+  return q;
+}
+
+void skynet_app::start_worker(std::thread& t, monitor& m, int id, int weight) {
+  t = std::thread([id, weight, &m]{
+    message_queue* q = nullptr;
+    while (!m.quit) {
+      q = context_message_dispatch(m.m[id].get(), q, weight);
+      if (q == nullptr) {
+        std::unique_lock guard(m.mutex);
+        ++m.sleep;
+        if (!m.quit) {
+          m.cond.wait(guard);
+        }
+        --m.sleep;
+      }
+    }
+  });
 }
 
 timer::timer() {
@@ -362,9 +521,8 @@ void timer::update() {
   auto diff = std::chrono::duration_cast<centisecond>(now - current_point_);
   if (now < current_point_) {
     auto zone = std::chrono::current_zone();
-    skynet_app::error(nullptr,
-                         std::format("time diff error: change from {} to {}",
-                          std::chrono::zoned_time{zone, now}, std::chrono::zoned_time{zone, current_point_}));
+    skynet_app::error(nullptr,"time diff error: change from {} to {}",
+                          std::chrono::zoned_time{zone, now}, std::chrono::zoned_time{zone, current_point_});
     current_point_ = now;
   } else if(diff.count() > 0){
     current_point_ = now;

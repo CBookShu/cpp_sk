@@ -1,8 +1,10 @@
 #pragma once
 #include "iguana/json_reader.hpp"
+#include "utils.h"
 #include <any>
 #include <atomic>
 #include <cassert>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -207,8 +209,8 @@ struct handle_t {
 constexpr size_t MESSAGE_TYPE_MASK = std::numeric_limits<size_t>::max() >> 8;
 constexpr size_t MESSAGE_TYPE_SHIFT = ((sizeof(size_t) - 1) * 8);
 
-constexpr size_t TAG_DONTCOPY = 0x10000;
-constexpr size_t TAG_ALLOCSESSION = 0x20000;
+constexpr size_t PTYPE_TAG_DONTCOPY = 0x10000;
+constexpr size_t PTYPE_TAG_ALLOCSESSION = 0x20000;
 enum PTYPE {
   PTYPE_TEXT = 0,
   PTYPE_RESPONSE = 1,
@@ -338,11 +340,10 @@ using context_ptr_t = std::shared_ptr<context_t>;
 
 struct module_base_t {
   virtual ~module_base_t() {};
-  virtual std::string_view name() const = 0;
-  virtual bool init(context_ptr_t &, std::string_view) = 0;
-  virtual void signal(int) = 0;
-
-  virtual std::string_view type_name() { return typeid(*this).name(); }
+  virtual bool init(context_ptr_t &, std::string_view) {
+    return true;
+  };
+  virtual void signal(int) {};
 };
 
 struct module_t {
@@ -386,6 +387,14 @@ struct context_t {
   static context_ptr_t create(std::string_view name, std::string_view param);
 
   void dispatch(skynet_message& msg);
+  int newsession() {
+    int session = ++session_id;
+    if (session_id <= 0) {
+      session_id = 1;
+      return 1;
+    }
+    return session;
+  }
 };
 
 struct handle_storage_t {
@@ -437,6 +446,12 @@ public:
   void start(context_ptr_t &ctx) { remote = ctx; }
 
   void exit() { remote.reset(); }
+
+  bool message_isremote(handle_t handle) {
+    assert(harbor != ~0);
+    int h = (handle & ~handle_t::HANDLE_MASK);
+    return h != harbor && h !=0;
+  }
 
 protected:
   constexpr bool invalid_type(PTYPE type) {
@@ -571,123 +586,47 @@ struct skynet_server {
     break;
 
 struct skynet_app {
-  static void error(context_t *context, std::string_view msg);
+  template <typename... Args>
+  static void error(context_t *context, std::format_string<Args...> fmt,  Args&&... args) {
+    static handle_t logger = handle_storage_t::ins().handle_finename("logger");
+    if (logger == 0) {
+      logger = handle_storage_t::ins().handle_finename("logger");
+    }
+    
+    if (logger == 0) {
+      return;
+    }
+    std::string msg = std::vformat(fmt.get(), std::make_format_args(args...));
+    skynet_message smsg;
+    if (context == NULL) {
+      smsg.source = 0;
+    } else {
+      smsg.source = context->handle;
+    }
+    smsg.session = 0;
+    smsg.data = (char *)std::malloc(msg.size() + 1);
+    smsg.data[msg.size()] = 0;
+    std::copy(msg.begin(), msg.end(), smsg.data);
+    smsg.sz = msg.size() | ((uint32_t)PTYPE_TEXT << MESSAGE_TYPE_SHIFT);
+    context_push(logger, smsg);
+  }
 
   static bool context_push(handle_t handle, skynet_message &msg);
 
-  static int send(context_t *context, uint32_t source, uint32_t destination,
-                  int type, int session, char* data, size_t sz) {
-    return 0;
-  }
+  static int send(context_t* ctx, uint32_t source, uint32_t destination , int type, int session, void * msg, size_t sz);
+  // static int context_send(context_t *context, void * msg, size_t sz, uint32_t source, int type, int session);
 
-  static void context_endless(handle_t handle) {
-    auto ctx = handle_storage_t::ins().handle_grab(handle);
-    if (!ctx) {
-      return;
-    }
-    ctx->endless = true;
-  }
+  static void context_endless(handle_t handle);
 
   static int context_total() { return node_t::ins().total; }
 
-  static void start_monitor(std::thread &t, monitor &m) {
-    for (auto &_m : m.m) {
-      _m = std::make_unique<skynet_monitor>();
-    }
-    t = std::thread([&m]() {
-      for (;;) {
-        CHECK_ABORT
-        for (auto &_m : m.m) {
-          _m->check();
-        }
-        for (int i = 0; i < 5; i++) {
-          CHECK_ABORT
-          std::this_thread::sleep_for(std::chrono::seconds(1));
-        }
-      }
-    });
-  }
+  static void start_monitor(std::thread &t, monitor &m);
 
-  static void start_timer(std::thread& t, monitor &m) {
-    t = std::thread([&m](){
-      int count = 0;
-      for(;;) {
-        timer::ins().update();
-        CHECK_ABORT
-        m.wakeup(m.count - 1);
-        std::this_thread::sleep_for(
-          std::chrono::microseconds(2500)
-        );
-      }
+  static void start_timer(std::thread& t, monitor &m);
 
-      {
-        std::lock_guard guard(m.mutex);
-        m.quit = true;
-        m.cond.notify_all();
-      }
+  static message_queue* context_message_dispatch(skynet_monitor* m, message_queue* q, int weight);
 
-    });
-  }
-
-  static message_queue* context_message_dispatch(skynet_monitor* m, message_queue* q, int weight) {
-    if (q == nullptr) {
-      q = global_queue::ins().pop();
-      if (q == nullptr) {
-        return nullptr;
-      }
-    }
-    handle_t handle = q->handle;
-    auto ctx = handle_storage_t::ins().handle_grab(handle);
-    if (!ctx) {
-      q->mq_release([source = handle](skynet_message* m){
-        assert(source);
-        skynet_app::send(nullptr, source, m->source, PTYPE_ERROR, m->session, nullptr, 0);
-      });
-    }
-
-    int i,n=1;
-    for(i=0;i<n;i++) {
-      auto msg = q->mq_pop();
-      if (!msg) {
-        return global_queue::ins().pop();
-      } else if(i == 0 && weight >= 0) {
-        n = q->length();
-        n >>= weight;
-      }
-
-      int overload = q->mq_overload();
-      if (overload) {
-        skynet_app::error(ctx.get(), std::format("May overlad, message queue length = {}", overload));
-      }
-
-      m->trigger(msg.value().source, handle);
-
-      if (ctx->cb) {
-        ctx->dispatch(msg.value());
-      }
-
-      m->trigger(0, 0);
-    }
-
-    return nullptr;
-  }
-
-  static void start_worker(std::thread& t, monitor& m, int id, int weight) {
-    t = std::thread([id, weight, &m]{
-      message_queue* q = nullptr;
-      while (!m.quit) {
-        q = context_message_dispatch(m.m[id].get(), q, weight);
-        if (q == nullptr) {
-          std::unique_lock guard(m.mutex);
-          ++m.sleep;
-          if (!m.quit) {
-            m.cond.wait(guard);
-          }
-          --m.sleep;
-        }
-      }
-    });
-  }
+  static void start_worker(std::thread& t, monitor& m, int id, int weight);
 
   static void start(config_t &config) {
     harbor_t::ins().init(config.harbor);
@@ -702,16 +641,18 @@ struct skynet_app {
       std::terminate();
     }
     handle_storage_t::ins().handle_namehandle(ctx->handle, "logger");
-    // TODO bootstrap
-    error(nullptr, "hello world");
-    timer::ins().timeout(ctx->handle, 100, ++ctx->session_id);
+
+    if (!config.bootstrap.empty()) {
+      auto args = algo::split_one(config.bootstrap, " ");
+      context_t::create(args.first, args.second);
+    }
 
     std::vector<std::thread> threads(config.thread + 3);
-
     monitor m;
     m.m.resize(config.thread);
     start_monitor(threads[0], m);
     start_timer(threads[1], m);
+    // TODO SOCKET
 
     static int weight[] = { 
       -1, -1, -1, -1, 0, 0, 0, 0,
