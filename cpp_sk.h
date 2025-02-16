@@ -30,101 +30,14 @@
 #include <string_view>
 #include <sys/types.h>
 #include <thread>
+#include <type_traits>
 #include <unistd.h>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include "sk_socket.h"
 
 namespace cpp_sk {
-template <typename T> class mutex_type {
-public:
-  template <typename... Args>
-  mutex_type(Args &&...args) : data_(std::forward<Args>(args)...) {}
-
-  class Guard {
-    std::lock_guard<T> guard_;
-    mutex_type *p_;
-
-  public:
-    Guard(mutex_type *m) : guard_(m->mux_), p_(m) {}
-
-    T *operator->() { return &(p_->data_); }
-
-    T *get() { return &(p_->data_); }
-  };
-
-  [[nodiscard]]
-  Guard write() {
-    return Guard(this);
-  }
-
-private:
-  std::mutex mux_;
-  T data_;
-};
-
-template <typename T> class shared_mutex_type {
-public:
-  template <typename... Args>
-  shared_mutex_type(Args &&...args) : data_(std::forward<Args>(args)...) {}
-
-  class WriteGuard {
-    std::lock_guard<std::shared_mutex> guard_;
-    shared_mutex_type *p_;
-
-  public:
-    WriteGuard(shared_mutex_type *m) : guard_(m->smux_), p_(m) {}
-
-    T *operator->() { return &(p_->data_); }
-
-    T *get() { return &(p_->data_); }
-  };
-
-  class ReadGuard {
-    std::shared_lock<std::shared_mutex> guard_;
-    shared_mutex_type *p_;
-
-  public:
-    ReadGuard(shared_mutex_type *m) : guard_(m->smux_), p_(m) {}
-
-    const T *operator->() { return &(p_->data_); }
-
-    const T *get() { return &(p_->data_); }
-  };
-
-  WriteGuard write() { return WriteGuard(this); }
-
-  ReadGuard read() { return ReadGuard(this); }
-
-private:
-  std::shared_mutex smux_;
-  T data_;
-};
-
-struct string_hash {
-  using is_transparent = void;
-  [[nodiscard]] size_t operator()(const char *txt) const {
-    return std::hash<std::string_view>{}(txt);
-  }
-  [[nodiscard]] size_t operator()(std::string_view txt) const {
-    return std::hash<std::string_view>{}(txt);
-  }
-  [[nodiscard]] size_t operator()(const std::string &txt) const {
-    return std::hash<std::string>{}(txt);
-  }
-};
-
-class spinlock_mutex {
-  std::atomic_flag flag;
-
-public:
-  spinlock_mutex() : flag{false} {}
-  void lock() {
-    while (flag.test_and_set(std::memory_order_acquire))
-      ;
-  }
-  void unlock() { flag.clear(std::memory_order_release); }
-};
 
 struct config_t {
   int thread = std::thread::hardware_concurrency();
@@ -248,6 +161,22 @@ struct skynet_message {
   void reserved_data() {
     data = nullptr;
     sz = 0;
+  }
+
+  template <typename T>
+  T* alloc() {
+    static_assert(std::is_trivial_v<T>, "T must trivial");
+    assert(data == nullptr);
+    data = (char*)std::malloc(sizeof(T));
+    sz = sizeof(T);
+    return reinterpret_cast<T*>(data);
+  }
+
+  char* alloc(size_t size) {
+    assert(data == nullptr);
+    data = (char*)std::malloc(size);
+    sz = size;
+    return data;
   }
 
   skynet_message(skynet_message &&other) {
@@ -604,10 +533,11 @@ struct skynet_app {
       smsg.source = context->handle;
     }
     smsg.session = 0;
-    smsg.data = (char *)std::malloc(msg.size() + 1);
+    smsg.alloc(msg.size() + 1);
     smsg.data[msg.size()] = 0;
     std::copy(msg.begin(), msg.end(), smsg.data);
-    smsg.sz = msg.size() | ((uint32_t)PTYPE_TEXT << MESSAGE_TYPE_SHIFT);
+    smsg.sz = msg.size();
+    smsg.sz |= (uint32_t)((size_t)PTYPE_TEXT << MESSAGE_TYPE_SHIFT);
     context_push(logger, smsg);
   }
 
@@ -624,6 +554,8 @@ struct skynet_app {
 
   static void start_timer(std::thread& t, monitor &m);
 
+  static void start_socket(std::thread& t, monitor& m);
+
   static message_queue* context_message_dispatch(skynet_monitor* m, message_queue* q, int weight);
 
   static void start_worker(std::thread& t, monitor& m, int id, int weight);
@@ -633,6 +565,7 @@ struct skynet_app {
     handle_storage_t::ins().init(config.harbor);
     global_queue::ins();
     timer::ins();
+    server::ins();
 
     auto ctx = context_t::create(config.logservice, config.logger);
     if (!ctx) {
@@ -652,7 +585,7 @@ struct skynet_app {
     m.m.resize(config.thread);
     start_monitor(threads[0], m);
     start_timer(threads[1], m);
-    // TODO SOCKET
+    start_socket(threads[2], m);
 
     static int weight[] = { 
       -1, -1, -1, -1, 0, 0, 0, 0,

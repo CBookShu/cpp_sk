@@ -5,7 +5,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 
-add_library(cpp_sk cpp_sk.cpp)
+add_library(cpp_sk cpp_sk.cpp sk_socket.cpp)
+target_compile_definitions(cpp_sk PUBLIC ASIO_HAS_CO_AWAIT)
 target_include_directories(cpp_sk PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/3rd/yalantinglibs/include)
 target_include_directories(cpp_sk PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/3rd/yalantinglibs/include/ylt/thirdparty)
 target_include_directories(cpp_sk PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/3rd/yalantinglibs/include/ylt/standalone)

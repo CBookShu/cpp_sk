@@ -1,5 +1,7 @@
 #include "cpp_sk.h"
+#include "asio/executor_work_guard.hpp"
 #include "logger.h"
+#include "sk_socket.h"
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -9,6 +11,7 @@
 #include <memory>
 #include <mutex>
 #include <sys/types.h>
+#include <thread>
 #include <utility>
 
 using namespace cpp_sk;
@@ -436,6 +439,13 @@ void skynet_app::start_timer(std::thread& t, monitor &m) {
       m.cond.notify_all();
     }
 
+  });
+}
+
+void skynet_app::start_socket(std::thread& t, monitor& m) {
+  t = std::thread([&m](){
+    auto guard = asio::make_work_guard(server::ins().poll);
+    server::ins().poll.run();
   });
 }
 
