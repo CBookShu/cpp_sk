@@ -247,15 +247,15 @@ context_ptr_t context_t::create(std::string_view name, std::string_view param) {
     ctx->init = true;
     global_queue::ins().push(ctx->queue.get());
     if (ctx.use_count() != 1) {
-      skynet_app::error(ctx.get(),"LAUNCH {} {}", name, param);
+      skynet_app::error(ctx.get(), "LAUNCH {} {}", name, param);
     }
   } else {
-    skynet_app::error(
-        ctx.get(), "FAILED LAUNCH {}", name);
+    skynet_app::error(ctx.get(), "FAILED LAUNCH {}", name);
     handle_storage_t::ins().handle_retire(ctx->handle);
     ctx->queue->mq_release([source = ctx->handle](skynet_message *m) {
       assert(source != 0);
-      skynet_app::send(nullptr, source, m->source, PTYPE_ERROR, m->session, nullptr, 0);
+      skynet_app::send(nullptr, source, m->source, PTYPE_ERROR, m->session,
+                       nullptr, 0);
     });
   }
 
@@ -269,14 +269,12 @@ context_t::~context_t() {
   node_t::ins().total--;
 }
 
-void context_t::dispatch(skynet_message& msg) {
+void context_t::dispatch(skynet_message &msg) {
   int type = msg.sz >> MESSAGE_TYPE_SHIFT;
-	size_t sz = msg.sz & MESSAGE_TYPE_MASK;
+  size_t sz = msg.sz & MESSAGE_TYPE_MASK;
   message_count++;
 
-  int reserve_msg = cb(
-    this, type, msg.session, msg.source, msg.data, sz
-  );
+  int reserve_msg = cb(this, type, msg.session, msg.source, msg.data, sz);
   if (reserve_msg) {
     msg.reserved_data();
   }
@@ -294,7 +292,7 @@ void module_t::register_module_func(std::string name,
 }
 
 module_base_t *module_t::create(std::string_view name) {
-  if(auto it = gMap.find(name); it != gMap.end()) {
+  if (auto it = gMap.find(name); it != gMap.end()) {
     return it->second();
   }
   return nullptr;
@@ -304,9 +302,10 @@ void skynet_monitor::check() {
   if (version == check_version) {
     if (destination) {
       skynet_app::context_endless(destination);
-      skynet_app::error(nullptr,"A message from {:08x} to {:08x} maybe "
-                                       "in an endless loop (version = {})",
-                                       source, destination, version.load());
+      skynet_app::error(nullptr,
+                        "A message from {:08x} to {:08x} maybe "
+                        "in an endless loop (version = {})",
+                        source, destination, version.load());
     }
   } else {
     check_version = version;
@@ -328,8 +327,8 @@ bool skynet_app::context_push(handle_t handle, skynet_message &msg) {
   return true;
 }
 
-static void
-_filter_args(context_t * context, int type, int *session, void ** data, size_t * sz) {
+static void _filter_args(context_t *context, int type, int *session,
+                         void **data, size_t *sz) {
   int needcopy = !(type & PTYPE_TAG_DONTCOPY);
   int allocsession = type & PTYPE_TAG_ALLOCSESSION;
   type &= 0xff;
@@ -339,7 +338,7 @@ _filter_args(context_t * context, int type, int *session, void ** data, size_t *
     *session = context->newsession();
   }
   if (needcopy && *data) {
-    char * msg = (char*)std::malloc(*sz+1);
+    char *msg = (char *)std::malloc(*sz + 1);
     memcpy(msg, *data, *sz);
     msg[*sz] = '\0';
     *data = msg;
@@ -347,7 +346,8 @@ _filter_args(context_t * context, int type, int *session, void ** data, size_t *
   *sz |= (size_t)type << MESSAGE_TYPE_SHIFT;
 }
 
-int skynet_app::send(context_t* context, uint32_t source, uint32_t destination , int type, int session, void * data, size_t sz) {
+int skynet_app::send(context_t *context, uint32_t source, uint32_t destination,
+                     int type, int session, void *data, size_t sz) {
   if ((sz & MESSAGE_TYPE_MASK) != sz) {
     skynet_app::error(context, "The message to {:x} is too large", destination);
     if (type & PTYPE_TAG_DONTCOPY) {
@@ -359,8 +359,8 @@ int skynet_app::send(context_t* context, uint32_t source, uint32_t destination ,
   _filter_args(context, type, &session, (void **)&data, &sz);
 
   if (source == 0) {
-		source = context->handle;
-	}
+    source = context->handle;
+  }
 
   if (destination == 0) {
     if (data) {
@@ -368,17 +368,17 @@ int skynet_app::send(context_t* context, uint32_t source, uint32_t destination ,
       std::free(data);
       return -1;
     }
-  
+
     return session;
   }
 
-  if(harbor_t::ins().message_isremote(destination)) {
+  if (harbor_t::ins().message_isremote(destination)) {
     // TODO: 跨进程
   } else {
     struct skynet_message smsg;
     smsg.source = source;
     smsg.session = session;
-    smsg.data = (char*)data;
+    smsg.data = (char *)data;
     smsg.sz = sz;
     if (!skynet_app::context_push(destination, smsg)) {
       std::free(data);
@@ -388,7 +388,8 @@ int skynet_app::send(context_t* context, uint32_t source, uint32_t destination ,
   return session;
 }
 
-// int skynet_app::context_send(context_t *context, void * msg, size_t sz, uint32_t source, int type, int session) {
+// int skynet_app::context_send(context_t *context, void * msg, size_t sz,
+// uint32_t source, int type, int session) {
 //     struct skynet_message smsg;
 //     smsg.source = source;
 //     smsg.session = session;
@@ -423,16 +424,14 @@ void skynet_app::start_monitor(std::thread &t, monitor &m) {
   });
 }
 
-void skynet_app::start_timer(std::thread& t, monitor &m) {
-  t = std::thread([&m](){
+void skynet_app::start_timer(std::thread &t, monitor &m) {
+  t = std::thread([&m]() {
     int count = 0;
-    for(;;) {
+    for (;;) {
       timer::ins().update();
       CHECK_ABORT
       m.wakeup(m.count - 1);
-      std::this_thread::sleep_for(
-        std::chrono::microseconds(2500)
-      );
+      std::this_thread::sleep_for(std::chrono::microseconds(2500));
     }
 
     {
@@ -440,18 +439,19 @@ void skynet_app::start_timer(std::thread& t, monitor &m) {
       m.quit = true;
       m.cond.notify_all();
     }
-
   });
 }
 
-void skynet_app::start_socket(std::thread& t, monitor& m) {
-  t = std::thread([&m](){
+void skynet_app::start_socket(std::thread &t, monitor &m) {
+  t = std::thread([&m]() {
     auto guard = asio::make_work_guard(server::ins().poll);
     server::ins().poll.run();
   });
 }
 
-message_queue* skynet_app::context_message_dispatch(skynet_monitor* m, message_queue* q, int weight) {
+message_queue *skynet_app::context_message_dispatch(skynet_monitor *m,
+                                                    message_queue *q,
+                                                    int weight) {
   if (q == nullptr) {
     q = global_queue::ins().pop();
     if (q == nullptr) {
@@ -461,25 +461,27 @@ message_queue* skynet_app::context_message_dispatch(skynet_monitor* m, message_q
   handle_t handle = q->handle;
   auto ctx = handle_storage_t::ins().handle_grab(handle);
   if (!ctx) {
-    q->mq_release([source = handle](skynet_message* m){
+    q->mq_release([source = handle](skynet_message *m) {
       assert(source);
-      skynet_app::send(nullptr, source, m->source, PTYPE_ERROR, m->session, nullptr, 0);
+      skynet_app::send(nullptr, source, m->source, PTYPE_ERROR, m->session,
+                       nullptr, 0);
     });
   }
 
-  int i,n=1;
-  for(i=0;i<n;i++) {
+  int i, n = 1;
+  for (i = 0; i < n; i++) {
     auto msg = q->mq_pop();
     if (!msg) {
       return global_queue::ins().pop();
-    } else if(i == 0 && weight >= 0) {
+    } else if (i == 0 && weight >= 0) {
       n = q->length();
       n >>= weight;
     }
 
     int overload = q->mq_overload();
     if (overload) {
-      skynet_app::error(ctx.get(), "May overlad, message queue length = {}", overload);
+      skynet_app::error(ctx.get(), "May overlad, message queue length = {}",
+                        overload);
     }
 
     m->trigger(msg.value().source, handle);
@@ -492,7 +494,7 @@ message_queue* skynet_app::context_message_dispatch(skynet_monitor* m, message_q
   }
 
   assert(q == ctx->queue.get());
-  auto* nq = global_queue::ins().pop();
+  auto *nq = global_queue::ins().pop();
   if (nq) {
     global_queue::ins().push(q);
     q = nq;
@@ -500,9 +502,9 @@ message_queue* skynet_app::context_message_dispatch(skynet_monitor* m, message_q
   return q;
 }
 
-void skynet_app::start_worker(std::thread& t, monitor& m, int id, int weight) {
-  t = std::thread([id, weight, &m]{
-    message_queue* q = nullptr;
+void skynet_app::start_worker(std::thread &t, monitor &m, int id, int weight) {
+  t = std::thread([id, weight, &m] {
+    message_queue *q = nullptr;
     while (!m.quit) {
       q = context_message_dispatch(m.m[id].get(), q, weight);
       if (q == nullptr) {
@@ -525,7 +527,9 @@ timer::timer() {
   constexpr time_point zero{};
   auto diff = current_point_ - zero;
   starttime_ = duration_cast<seconds>(diff).count();
-  current_ = duration_cast<centisecond>(current_point_ - clock_t::from_time_t(starttime_)).count();
+  current_ = duration_cast<centisecond>(current_point_ -
+                                        clock_t::from_time_t(starttime_))
+                 .count();
 }
 
 void timer::update() {
@@ -533,10 +537,11 @@ void timer::update() {
   auto diff = std::chrono::duration_cast<centisecond>(now - current_point_);
   if (now < current_point_) {
     auto zone = std::chrono::current_zone();
-    skynet_app::error(nullptr,"time diff error: change from {} to {}",
-                          std::chrono::zoned_time{zone, now}, std::chrono::zoned_time{zone, current_point_});
+    skynet_app::error(nullptr, "time diff error: change from {} to {}",
+                      std::chrono::zoned_time{zone, now},
+                      std::chrono::zoned_time{zone, current_point_});
     current_point_ = now;
-  } else if(diff.count() > 0){
+  } else if (diff.count() > 0) {
     current_point_ = now;
     current_ += diff.count();
     for (int i = 0; i < diff.count(); ++i) {
@@ -555,7 +560,7 @@ void timer::timer_update() {
 
 void timer::timer_execute() {
   int idx = time_ & TIME_NEAR_MASK;
-  while(near_[idx].head.next) {
+  while (near_[idx].head.next) {
     auto current = near_[idx].clear();
     lock_.unlock();
     dispatch(std::move(current));
@@ -570,7 +575,7 @@ void timer::timer_shift() {
   } else {
     uint32_t time_ = ct >> TIME_NEAR_SHIFT;
     int i = 0;
-    while((ct & (mask - 1)) == 0) {
+    while ((ct & (mask - 1)) == 0) {
       int idx = time_ & TIME_NEAR_MASK;
       if (idx != 0) {
         move_list(i, idx);
@@ -609,15 +614,15 @@ void timer::timer_add(std::unique_ptr<timer_node_event> node, int32_t timeout) {
 }
 
 void timer::add_node(std::unique_ptr<timer_node_event> node) {
-  uint32_t time=node->expire;
+  uint32_t time = node->expire;
   uint32_t current_time = time_;
-  if ((time|TIME_NEAR_MASK) == (current_time|TIME_NEAR_MASK)) {
-    near_[time&TIME_NEAR_MASK].link(std::move(node));
+  if ((time | TIME_NEAR_MASK) == (current_time | TIME_NEAR_MASK)) {
+    near_[time & TIME_NEAR_MASK].link(std::move(node));
   } else {
     int i;
     uint32_t mask = TIME_NEAR << TIME_LEVEL_SHIFT;
-    for(i=0;i<3;++i) {
-      if ((time|(mask-1)) == (current_time|(mask-1))) {
+    for (i = 0; i < 3; ++i) {
+      if ((time | (mask - 1)) == (current_time | (mask - 1))) {
         break;
       }
       mask <<= TIME_LEVEL_SHIFT;
@@ -625,16 +630,20 @@ void timer::add_node(std::unique_ptr<timer_node_event> node) {
     /*
       当 time 溢出了，只要不溢出太严重到，又跟 time_ 相差接近 TIME_NEAR
       那么最终 (time|(mask-1)) 就不会等于 (current_time|(mask-1))
-      那么最终会走到 level:3 层级，并且 (time>>(TIME_NEAR_SHIFT + i*TIME_LEVEL_SHIFT)) & TIME_LEVEL_MASK) = 0
-      即：所有溢出都统统存入 t_[3][0], 在shift 的时候，当 time_ = 0，即也溢出时，会重新将这些node 投放一遍
+      那么最终会走到 level:3 层级，并且 (time>>(TIME_NEAR_SHIFT +
+      i*TIME_LEVEL_SHIFT)) & TIME_LEVEL_MASK) = 0 即：所有溢出都统统存入
+      t_[3][0], 在shift 的时候，当 time_ = 0，即也溢出时，会重新将这些node
+      投放一遍
     */
-    t_[i][((time>>(TIME_NEAR_SHIFT + i*TIME_LEVEL_SHIFT)) & TIME_LEVEL_MASK)].link(std::move(node));
+    t_[i]
+      [((time >> (TIME_NEAR_SHIFT + i * TIME_LEVEL_SHIFT)) & TIME_LEVEL_MASK)]
+          .link(std::move(node));
   }
 }
 
 void timer::move_list(int level, int idx) {
   auto current = t_[level][idx].clear();
-  while(current) {
+  while (current) {
     auto temp = std::move(current->next);
     add_node(std::move(current));
     current = std::move(temp);
@@ -646,10 +655,10 @@ void timer::dispatch(std::unique_ptr<timer_node_event> current) {
     skynet_message message;
     message.source = 0;
     message.session = current->session;
-    //message.data = nullptr;
+    // message.data = nullptr;
     message.sz = (size_t)PTYPE_RESPONSE << MESSAGE_TYPE_SHIFT;
 
     skynet_app::context_push(current->handle, message);
     current = std::move(current->next);
-  } while(current);
+  } while (current);
 }

@@ -4,14 +4,17 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-
 add_library(cpp_sk cpp_sk.h cpp_sk.cpp utils.h logger.h sk_socket.h sk_socket.cpp)
 target_compile_definitions(cpp_sk PUBLIC ASIO_HAS_CO_AWAIT)
 target_include_directories(cpp_sk PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/3rd/yalantinglibs/include)
 target_include_directories(cpp_sk PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/3rd/yalantinglibs/include/ylt/thirdparty)
 target_include_directories(cpp_sk PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/3rd/yalantinglibs/include/ylt/standalone)
 
-message(STATUS "path ${CMAKE_CURRENT_SOURCE_DIR}/3rd/yalantinglibs/include")
-
 add_executable(test main.cpp)
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+    message(STATUS "Using gcc compiler.")
+    add_compile_options(-fsanitize=address -g)
+    target_link_libraries(test PRIVATE cpp_sk asan)
+endif()
 target_link_libraries(test PRIVATE cpp_sk)

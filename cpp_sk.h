@@ -1,5 +1,6 @@
 #pragma once
 #include "iguana/json_reader.hpp"
+#include "sk_socket.h"
 #include "utils.h"
 #include <any>
 #include <atomic>
@@ -34,7 +35,6 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-#include "sk_socket.h"
 
 namespace cpp_sk {
 
@@ -145,61 +145,17 @@ enum PTYPE {
 struct skynet_message {
   uint32_t source = 0;
   int session = 0;
-  //char *data = nullptr;
   std::any data;
   // [sizeof(size_t)-8, sizeof(size_t)) type
   // [0, sizeof(size_t)-8) data len
   size_t sz = 0;
 
-  //skynet_message() = default;
-  //~skynet_message() {
-  //  if (data) {
-  //    std::free(data);
-  //  }
-  //}
-
-  ~skynet_message() {
-    int a;
-  }
+  ~skynet_message() { int a; }
 
   void reserved_data() {
     data = nullptr;
     sz = 0;
   }
-
-  /*template <typename T>
-  T* alloc() {
-    static_assert(std::is_trivial_v<T>, "T must trivial");
-    assert(data == nullptr);
-    data = (char*)std::malloc(sizeof(T));
-    sz = sizeof(T);
-    return reinterpret_cast<T*>(data);
-  }
-
-  char* alloc(size_t size) {
-    assert(data == nullptr);
-    data = (char*)std::malloc(size);
-    sz = size;
-    return data;
-  }
-
-  skynet_message(skynet_message &&other) {
-    data = std::exchange(other.data, nullptr);
-    sz = std::exchange(other.sz, 0);
-    source = std::exchange(other.source, 0);
-    session = std::exchange(other.session, 0);
-  }
-
-  skynet_message &operator=(skynet_message &&other) {
-    data = std::exchange(other.data, data);
-    sz = std::exchange(other.sz, sz);
-    source = std::exchange(other.source, source);
-    session = std::exchange(other.session, session);
-    return *this;
-  }
-
-  skynet_message(skynet_message &other) = delete;
-  skynet_message &operator=(skynet_message &other) = delete;*/
 };
 
 struct message_queue;
@@ -273,32 +229,32 @@ using context_ptr_t = std::shared_ptr<context_t>;
 
 struct module_base_t {
   virtual ~module_base_t() {};
-  virtual bool init(context_ptr_t &, std::string_view) {
-    return true;
-  };
+  virtual bool init(context_ptr_t &, std::string_view) { return true; };
   virtual void signal(int) {};
 };
 
 struct module_t {
-  using creator_func_t = module_base_t* (*)();
-  static std::unordered_map<std::string, creator_func_t, string_hash, std::equal_to<>> gMap;
+  using creator_func_t = module_base_t *(*)();
+  static std::unordered_map<std::string, creator_func_t, string_hash,
+                            std::equal_to<>>
+      gMap;
 
   static void register_module_func(std::string name, creator_func_t func);
   static module_base_t *create(std::string_view name);
 
-  template <typename M>
-  struct creator {
+  template <typename M> struct creator {
     static_assert(std::is_base_of_v<module_base_t, M>, "M no support");
 
-    static module_base_t* create() {
-      auto* m = new M();
-      return static_cast<module_base_t*>(m);
+    static module_base_t *create() {
+      auto *m = new M();
+      return static_cast<module_base_t *>(m);
     }
   };
 };
 
 struct context_t {
-  typedef int (*skynet_cb)(struct context_t * context, int type, int session, uint32_t source , std::any& a, size_t sz);
+  typedef int (*skynet_cb)(struct context_t *context, int type, int session,
+                           uint32_t source, std::any &a, size_t sz);
 
   std::unique_ptr<module_base_t> instance;
   std::any ud;
@@ -319,7 +275,7 @@ struct context_t {
 
   static context_ptr_t create(std::string_view name, std::string_view param);
 
-  void dispatch(skynet_message& msg);
+  void dispatch(skynet_message &msg);
   int newsession() {
     int session = ++session_id;
     if (session_id <= 0) {
@@ -383,7 +339,7 @@ public:
   bool message_isremote(handle_t handle) {
     assert(harbor != ~0);
     int h = (handle & ~handle_t::HANDLE_MASK);
-    return h != harbor && h !=0;
+    return h != harbor && h != 0;
   }
 
 protected:
@@ -440,17 +396,13 @@ struct timer {
     uint32_t expire = 0;
   };
 
-  struct timer_node_event : public timer_node, public timer_event {
-    
-  };
+  struct timer_node_event : public timer_node, public timer_event {};
 
   struct link_list {
     struct timer_node head;
     struct timer_node *tail = nullptr;
 
-    link_list(){
-      clear();
-    }
+    link_list() { clear(); }
 
     std::unique_ptr<timer_node_event> clear() {
       auto ret = std::move(head.next);
@@ -459,7 +411,7 @@ struct timer {
     }
 
     void link(std::unique_ptr<timer_node_event> node) {
-      auto* ptr = node.get();
+      auto *ptr = node.get();
       tail->next = std::move(node);
       tail = ptr;
       ptr->next = nullptr;
@@ -470,7 +422,7 @@ struct timer {
   struct link_list t_[4][TIME_LEVEL];
   spinlock_mutex lock_;
 
-  uint32_t time_;    // 当前near list 的step
+  uint32_t time_; // 当前near list 的step
 
   using clock_t = std::chrono::system_clock;
   using time_point = clock_t::time_point;
@@ -483,7 +435,7 @@ struct timer {
   time_point current_point_; // 上次刷新的时间戳
   timer();
 
-  static timer& ins() {
+  static timer &ins() {
     static timer T;
     return T;
   }
@@ -499,20 +451,12 @@ struct timer {
   int timeout(handle_t handle, int32_t time, int session);
 
   void dispatch(std::unique_ptr<timer_node_event> current);
-  uint64_t now() {
-    return current_;
-  }
-  uint32_t starttime() {
-    return starttime_;
-  }
-  time_t ctime() {
-    return starttime_ + current_/100;
-  }
+  uint64_t now() { return current_; }
+  uint32_t starttime() { return starttime_; }
+  time_t ctime() { return starttime_ + current_ / 100; }
 };
 
-struct skynet_server {
-
-};
+struct skynet_server {};
 
 #define CHECK_ABORT                                                            \
   if (context_total() == 0)                                                    \
@@ -520,12 +464,13 @@ struct skynet_server {
 
 struct skynet_app {
   template <typename... Args>
-  static void error(context_t *context, std::format_string<Args...> fmt,  Args&&... args) {
+  static void error(context_t *context, std::format_string<Args...> fmt,
+                    Args &&...args) {
     static handle_t logger = handle_storage_t::ins().handle_finename("logger");
     if (logger == 0) {
       logger = handle_storage_t::ins().handle_finename("logger");
     }
-    
+
     if (logger == 0) {
       return;
     }
@@ -545,8 +490,10 @@ struct skynet_app {
 
   static bool context_push(handle_t handle, skynet_message &msg);
 
-  static int send(context_t* ctx, uint32_t source, uint32_t destination , int type, int session, void * msg, size_t sz);
-  // static int context_send(context_t *context, void * msg, size_t sz, uint32_t source, int type, int session);
+  static int send(context_t *ctx, uint32_t source, uint32_t destination,
+                  int type, int session, void *msg, size_t sz);
+  // static int context_send(context_t *context, void * msg, size_t sz, uint32_t
+  // source, int type, int session);
 
   static void context_endless(handle_t handle);
 
@@ -554,13 +501,14 @@ struct skynet_app {
 
   static void start_monitor(std::thread &t, monitor &m);
 
-  static void start_timer(std::thread& t, monitor &m);
+  static void start_timer(std::thread &t, monitor &m);
 
-  static void start_socket(std::thread& t, monitor& m);
+  static void start_socket(std::thread &t, monitor &m);
 
-  static message_queue* context_message_dispatch(skynet_monitor* m, message_queue* q, int weight);
+  static message_queue *context_message_dispatch(skynet_monitor *m,
+                                                 message_queue *q, int weight);
 
-  static void start_worker(std::thread& t, monitor& m, int id, int weight);
+  static void start_worker(std::thread &t, monitor &m, int id, int weight);
 
   static void start(config_t &config) {
     harbor_t::ins().init(config.harbor);
@@ -589,22 +537,21 @@ struct skynet_app {
     start_timer(threads[1], m);
     start_socket(threads[2], m);
 
-    static int weight[] = { 
-      -1, -1, -1, -1, 0, 0, 0, 0,
-      1, 1, 1, 1, 1, 1, 1, 1, 
-      2, 2, 2, 2, 2, 2, 2, 2, 
-      3, 3, 3, 3, 3, 3, 3, 3, };
-    for(int i = 0; i < config.thread; ++i) {
+    static int weight[] = {
+        -1, -1, -1, -1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1,
+        2,  2,  2,  2,  2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3,
+    };
+    for (int i = 0; i < config.thread; ++i) {
       int w;
-      if (i < sizeof(weight)/sizeof(weight[0])) {
-        w= weight[i];
+      if (i < sizeof(weight) / sizeof(weight[0])) {
+        w = weight[i];
       } else {
         w = 0;
       }
       start_worker(threads[3 + i], m, i, w);
     }
     error(nullptr, "wait stop");
-    for(auto& t:threads) {
+    for (auto &t : threads) {
       t.join();
     }
   }
