@@ -31,7 +31,6 @@
 #include <sys/types.h>
 #include <thread>
 #include <type_traits>
-#include <unistd.h>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -52,7 +51,7 @@ struct config_t {
   void read(const char *config_path) {
     try {
       auto path = std::filesystem::current_path().append(config_path);
-      iguana::from_json_file(*this, path);
+      iguana::from_json_file(*this, path.string());
 
       if (logservice.empty()) {
         logservice = "logger";
@@ -146,16 +145,21 @@ enum PTYPE {
 struct skynet_message {
   uint32_t source = 0;
   int session = 0;
-  char *data = nullptr;
+  //char *data = nullptr;
+  std::any data;
   // [sizeof(size_t)-8, sizeof(size_t)) type
   // [0, sizeof(size_t)-8) data len
   size_t sz = 0;
 
-  skynet_message() = default;
+  //skynet_message() = default;
+  //~skynet_message() {
+  //  if (data) {
+  //    std::free(data);
+  //  }
+  //}
+
   ~skynet_message() {
-    if (data) {
-      std::free(data);
-    }
+    int a;
   }
 
   void reserved_data() {
@@ -163,7 +167,7 @@ struct skynet_message {
     sz = 0;
   }
 
-  template <typename T>
+  /*template <typename T>
   T* alloc() {
     static_assert(std::is_trivial_v<T>, "T must trivial");
     assert(data == nullptr);
@@ -195,7 +199,7 @@ struct skynet_message {
   }
 
   skynet_message(skynet_message &other) = delete;
-  skynet_message &operator=(skynet_message &other) = delete;
+  skynet_message &operator=(skynet_message &other) = delete;*/
 };
 
 struct message_queue;
@@ -294,14 +298,14 @@ struct module_t {
 };
 
 struct context_t {
-  typedef int (*skynet_cb)(struct context_t * context, int type, int session, uint32_t source , const void * msg, size_t sz);
+  typedef int (*skynet_cb)(struct context_t * context, int type, int session, uint32_t source , std::any& a, size_t sz);
 
   std::unique_ptr<module_base_t> instance;
   std::any ud;
   skynet_cb cb;
   std::unique_ptr<message_queue> queue;
-  u_int64_t cpu_cost;
-  u_int64_t cpu_start;
+  uint64_t cpu_cost;
+  uint64_t cpu_start;
   std::string result;
   handle_t handle;
   int session_id;
@@ -503,7 +507,7 @@ struct timer {
   }
   time_t ctime() {
     return starttime_ + current_/100;
-  } 
+  }
 };
 
 struct skynet_server {
@@ -533,10 +537,8 @@ struct skynet_app {
       smsg.source = context->handle;
     }
     smsg.session = 0;
-    smsg.alloc(msg.size() + 1);
-    smsg.data[msg.size()] = 0;
-    std::copy(msg.begin(), msg.end(), smsg.data);
-    smsg.sz = msg.size();
+    smsg.data = std::move(msg);
+    smsg.sz = msg.size() + 1;
     smsg.sz |= (uint32_t)((size_t)PTYPE_TEXT << MESSAGE_TYPE_SHIFT);
     context_push(logger, smsg);
   }
@@ -601,7 +603,7 @@ struct skynet_app {
       }
       start_worker(threads[3 + i], m, i, w);
     }
-    std::cout << "wait stop" << std::endl;
+    error(nullptr, "wait stop");
     for(auto& t:threads) {
       t.join();
     }

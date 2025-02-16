@@ -34,11 +34,6 @@ namespace cpp_sk {
   */
   struct context_t;
 
-  struct buffer_t {
-    std::unique_ptr<char*> buf;
-    size_t size = 0;
-  };
-
   enum class skynet_socket_type {
     data = 1,
     connect = 2,
@@ -49,18 +44,42 @@ namespace cpp_sk {
     warning = 7
   };
 
+  struct string_buf {
+    std::string str;
+    std::string_view str_view;
+
+    size_t size() {
+        if (!str.empty()) {
+            return str.size();
+        }
+        if(!str_view.empty()) {
+            return str_view.size();
+        }
+        return 0;
+    }
+    const char* ptr() {
+        if(!str.empty()) {
+            return str.data();
+        }
+        if(!str_view.empty()) {
+            return str_view.data();
+        }
+        return nullptr;
+    }
+  };
+
   struct socket_message {
     int id = 0;
     uintptr_t opaque = 0;
     int ud = 0;	// for accept, ud is new connection id ; for data, ud is size of data 
-    const char * data = nullptr;
+    string_buf data;
   };
 
   struct skynet_socket_message {
     skynet_socket_type type;
     int id;
     int ud;
-    const char * buffer;
+    string_buf buffer;
   };
 
   enum class socket_type : int {
@@ -72,7 +91,7 @@ namespace cpp_sk {
     connected = 5,
     halfclose_read = 6,
     halfclose_write = 7,
-    paccept,
+    paccept = 8,
     bind = 9,
   };
 
@@ -104,15 +123,13 @@ namespace cpp_sk {
     std::atomic<socket_type> type{socket_type::invalid};
 
     // write list
-    std::list<buffer_t> wlist;
+    std::deque<std::string> wlist;
     spinlock_mutex wlist_lock;
-    std::ptrdiff_t woffset = 0;
 
-    static constexpr size_t MIN_READ_SIZE = 512;
     // read buffer
-    std::ptrdiff_t lpos = 0;
-    std::ptrdiff_t rpos = 0;
-    std::vector<std::byte> rbuf;
+    size_t rsize;
+
+    bool close = false;
 
     void clear() {
       {
@@ -124,11 +141,9 @@ namespace cpp_sk {
       opaque = 0;
       id = -1;
 
-      woffset = 0;
-
-      lpos = 0;
-      rpos = 0;
-      rbuf.clear();
+      rsize = 0;
+      
+      close = false;
 
       sock = std::monostate{};
     }
@@ -136,7 +151,7 @@ namespace cpp_sk {
 
   struct server {
     asio::io_context poll;
-    std::deque<socket_t> slots;
+    std::vector<socket_t> slots;
     std::atomic_size_t alloc;
     spinlock_mutex lock;
 
@@ -149,10 +164,12 @@ namespace cpp_sk {
 
     int socket_listen(context_t* ctx, const char* host, int port, int backlog);
     int socket_connect(context_t* ctx, const char* host, int port);
-
     void socket_start(context_t* ctx, int id);
+    int socket_send(context_t* ctx, int id, std::string buf);
+    void close_socket(context_t* ctx, int id);
+    void shutdown_socket(context_t* ctx, int id);
 
-    void forward_message(skynet_socket_type type, bool padding, socket_message& result);
+    void forward_message(skynet_socket_type type, socket_message& result);
 
     static server& ins() {
       static server s;

@@ -27,17 +27,17 @@ message_queue::message_queue(handle_t handle_)
 message_queue::~message_queue() { assert(next == nullptr); }
 
 size_t message_queue::length() {
-  int head, tail, cap;
+  int head_, tail_, cap_;
   {
     std::lock_guard guard(lock);
-    head = head;
-    tail = tail;
-    cap = queue.size();
+    head_ = head;
+    tail_ = tail;
+    cap_ = queue.size();
   }
-  if (head <= tail) {
-    return tail - head;
+  if (head_ <= tail_) {
+    return tail_ - head_;
   }
-  return tail + cap - head;
+  return tail_ + cap_ - head_;
 }
 
 int message_queue::mq_overload() { return std::exchange(overload, 0); }
@@ -63,10 +63,12 @@ void message_queue::mq_push(skynet_message &message) {
 }
 
 std::optional<skynet_message> message_queue::mq_pop() {
-  std::optional<skynet_message> ret;
+  std::optional<skynet_message> res;
+  bool ret = true;
   std::lock_guard guard(lock);
   if (head != tail) {
-    ret = std::move(queue[head++]);
+    ret = false;
+    res = std::move(queue[head++]);
     int head_ = head;
     int tail_ = tail;
     int cap_ = queue.size();
@@ -78,7 +80,7 @@ std::optional<skynet_message> message_queue::mq_pop() {
     if (length < 0) {
       length += cap_;
     }
-    if (length > overload_threshold) {
+    while (length > overload_threshold) {
       overload = length;
       overload_threshold *= 2;
     }
@@ -90,7 +92,7 @@ std::optional<skynet_message> message_queue::mq_pop() {
     in_global = false;
   }
 
-  return ret;
+  return res;
 }
 
 void message_queue::mark_release() {
@@ -273,7 +275,7 @@ void context_t::dispatch(skynet_message& msg) {
   message_count++;
 
   int reserve_msg = cb(
-    this, type, msg.session, msg.source, msg.data, msg.sz
+    this, type, msg.session, msg.source, msg.data, sz
   );
   if (reserve_msg) {
     msg.reserved_data();
@@ -550,6 +552,7 @@ void timer::timer_update() {
   timer_execute();
   lock_.unlock();
 }
+
 void timer::timer_execute() {
   int idx = time_ & TIME_NEAR_MASK;
   while(near_[idx].head.next) {
@@ -609,7 +612,6 @@ void timer::add_node(std::unique_ptr<timer_node_event> node) {
   uint32_t time=node->expire;
   uint32_t current_time = time_;
   if ((time|TIME_NEAR_MASK) == (current_time|TIME_NEAR_MASK)) {
-    std::cout << "add node:" << node->expire << std::endl;
     near_[time&TIME_NEAR_MASK].link(std::move(node));
   } else {
     int i;
@@ -644,7 +646,7 @@ void timer::dispatch(std::unique_ptr<timer_node_event> current) {
     skynet_message message;
     message.source = 0;
     message.session = current->session;
-    message.data = nullptr;
+    //message.data = nullptr;
     message.sz = (size_t)PTYPE_RESPONSE << MESSAGE_TYPE_SHIFT;
 
     skynet_app::context_push(current->handle, message);

@@ -91,7 +91,7 @@ template <typename T> class mutex_type {
     std::atomic_flag flag;
   
   public:
-    spinlock_mutex() : flag{false} {}
+    spinlock_mutex() = default;
     void lock() {
       while (flag.test_and_set(std::memory_order_acquire))
         ;
@@ -100,6 +100,16 @@ template <typename T> class mutex_type {
 
     bool trylock() {
       return !flag.test_and_set(std::memory_order_acquire);
+    }
+  };
+
+  template <typename F>
+  struct defer_t {
+    F f;
+
+    defer_t(F&& f_):f(std::move(f_)) {}
+    ~defer_t() {
+        f();
     }
   };
 
