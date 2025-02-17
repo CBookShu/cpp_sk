@@ -9,6 +9,8 @@
 #include <utility>
 #include <vector>
 
+namespace cpp_sk {
+
 template <typename T> class mutex_type {
 public:
   template <typename... Args>
@@ -108,6 +110,9 @@ template <typename F> struct defer_t {
   ~defer_t() { f(); }
 };
 
+template<class... Ts> struct overload : Ts... { using Ts::operator()...; };
+template<class... Ts> overload(Ts...) -> overload<Ts...>;
+
 struct algo {
   static constexpr std::vector<std::string_view>
   split(std::string_view s, std::string_view div = " ") {
@@ -152,3 +157,4 @@ struct algo {
     }
   }
 };
+}

@@ -46,9 +46,24 @@ enum class skynet_socket_type {
   warning = 7
 };
 
+struct complie_str {
+    std::string_view str;
+    consteval complie_str(std::string_view s):str(s) {}
+
+    consteval complie_str(const char *s):str(s) {}
+};
+
 struct string_buf {
+private:
   std::string str;
   std::string_view str_view;
+public:
+  void const_assgin(complie_str s) {
+    str_view = s.str;
+  }
+  void assgin(std::string s) {
+    str = std::move(s);
+  }
 
   size_t size() {
     if (!str.empty()) {
@@ -115,28 +130,26 @@ struct socket_t {
 
   std::atomic<socket_type> type{socket_type::invalid};
 
-  // write list
+  // this list just read and write in poll thread
   std::deque<std::string> wlist;
   spinlock_mutex wlist_lock;
 
-  // read buffer
-  size_t rsize;
+  std::atomic_bool close{false};
 
-  bool close = false;
+  udp_ns::endpoint ep;
+
+  bool check_pstart(int id);
+  bool check_can_start(int id);
+  bool check_can_write(int id);
 
   void clear() {
-    {
-      wlist_lock.lock();
-      wlist.clear();
-      wlist_lock.unlock();
-    }
-
+    wlist.clear();
     opaque = 0;
     id = -1;
 
-    rsize = 0;
-
     close = false;
+
+    ep = {};
 
     sock = std::monostate{};
   }
@@ -146,7 +159,6 @@ struct server {
   asio::io_context poll;
   std::vector<socket_t> slots;
   std::atomic_size_t alloc;
-  spinlock_mutex lock;
 
   server() : poll{1}, alloc{1}, slots{65535} {}
 
@@ -158,9 +170,10 @@ struct server {
   void socket_start(context_t *ctx, int id);
   int socket_send(context_t *ctx, int id, std::string buf);
   void close_socket(context_t *ctx, int id);
-  void shutdown_socket(context_t *ctx, int id);
 
   void forward_message(skynet_socket_type type, socket_message &result);
+
+  auto start(int id) -> asio::awaitable<void>;
 
   static server &ins() {
     static server s;
