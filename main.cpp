@@ -106,17 +106,18 @@ class test : public cpp_sk::module_base_t {
         });
       });
     });
-    //auto fd =
-    //    connect(ctx.get(), "127.0.0.1", 8888, [this, ctx = ctx.get()](int id) {
-    //      start_tcp(ctx, id, [](int id, std::string_view data) {
-    //        log("id:{} data:{}", id, data);
-    //        return data.size();
-    //      });
-    //    });
-    //timeout(ctx.get(), 200, [this, ctx = ctx.get(), fd]() {
-    //  log("start send buff");
-    //  send_buffer(ctx, fd, "hello world");
-    //});
+    // auto fd =
+    //     connect(ctx.get(), "127.0.0.1", 8888, [this, ctx = ctx.get()](int id)
+    //     {
+    //       start_tcp(ctx, id, [](int id, std::string_view data) {
+    //         log("id:{} data:{}", id, data);
+    //         return data.size();
+    //       });
+    //     });
+    // timeout(ctx.get(), 200, [this, ctx = ctx.get(), fd]() {
+    //   log("start send buff");
+    //   send_buffer(ctx, fd, "hello world");
+    // });
     return true;
   };
 
