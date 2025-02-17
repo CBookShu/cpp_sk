@@ -217,7 +217,7 @@ int cpp_sk::server::socket_send(context_t* ctx, int id, std::string buf)
         asio::error_code ec;
         {
             std::lock_guard guard(slot.wlist_lock, std::adopt_lock);
-            std::visit(
+            co_await std::visit(
                 overload(
                     [&](socket_t::tcp_ns::socket& s) -> asio::awaitable<void> {
                         while (!slot.wlist.empty()) {
