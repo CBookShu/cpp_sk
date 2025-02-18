@@ -121,23 +121,20 @@ enum class skynet_socket_type {
 };
 
 struct complie_str {
-    std::string_view str;
-    consteval complie_str(std::string_view s):str(s) {}
+  std::string_view str;
+  consteval complie_str(std::string_view s) : str(s) {}
 
-    consteval complie_str(const char *s):str(s) {}
+  consteval complie_str(const char *s) : str(s) {}
 };
 
 struct string_buf {
 private:
   std::string str;
   std::string_view str_view;
+
 public:
-  void const_assgin(complie_str s) {
-    str_view = s.str;
-  }
-  void assgin(std::string s) {
-    str = std::move(s);
-  }
+  void const_assgin(complie_str s) { str_view = s.str; }
+  void assgin(std::string s) { str = std::move(s); }
 
   size_t size() {
     if (!str.empty()) {
