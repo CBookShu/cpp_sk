@@ -17,22 +17,96 @@
 
 namespace cpp_sk {
 /*
-  skynet 代码，server 一上来就把上限的 socket 数组内存分配好
-  后面，通过allocid 类似 linux 中的 fd，自己封装了另外一套fd
-  ctx 中并发的获取socket 数组中的值，并把新的fd 分配给它，并把 ctx的handle 跟
-  对应的 id 绑定好；后面write 到 ctrl 的一个pipe中。
-  pipe 在socket thread 中在epoll 之前优先判断,取出并进行操作。随后poll
-  对异步结果 进行收集，并forward 到对应的ctx queue中，随后 ctx
-  就收到了对应的消息
+* 
 
-  完成 socket 的任务
-  socket:
-    1. pair 读取到 fin 的时候，close 当前的 read，如果本地还有write
-  buf，就写完为止
+skynet socket process
+ctx: worker thread
+server single thread poll
 
-    2. pair 写失败的时候，需要强制 close 了
+socket::type state transition
+invalid
+	get-> reserve
+	
+listen->plisten
+	start->listen
 
-  整个流程代码稍微有点多，对于cpp来说，直接上asio 简化其中封装的细节。
+paccept[listen accept new fd]:
+	start-> connected
+
+connect->
+	at once call: connect
+		ok:	connected
+		err[in process]: connecting
+			poll ok:
+				connected
+	start:
+		type is keep
+
+	
+
+skynet_socket_connect
+	'O'
+
+poll:
+	open_socket
+		getaddrinfo-> socket -> keepalive,noblock-> connect
+			connect ok: SOCKET_TYPE_CONNECTED,SOCKET_OPEN
+			connect err: SOCKET_TYPE_CONNECTING,continue
+	SOCKET_OPEN
+		data = ip
+		forward_message(SKYNET_SOCKET_TYPE_CONNECT, true, &result);
+		
+		
+skynet_socket_listen
+	do_listen
+	'L'
+poll:
+	listen_socket
+		SOCKET_TYPE_PLISTEN
+		data = error
+			SOCKET_OPEN or SOCKET_ERR
+		
+		forward_message(SKYNET_SOCKET_TYPE_CONNECT, true, &result);
+		
+
+skynet_socket_close
+	'K'
+poll:
+	close_socket
+		-1	when write buff not empty; shutdown read first and close later
+		SOCKET_CLOSE
+	
+	SOCKET_CLOSE:
+		SKYNET_SOCKET_TYPE_CLOSE
+	
+
+skynet_socket_start
+	socket_server_start
+	'R'
+poll:
+	paccept -> connected
+	plisten->listen
+	connected->connected
+	
+	all fd-> enable read
+	
+	
+here ignore it
+socket_server_shutdown
+	'K'
+poll:
+	close_socket
+		must call force_close
+		
+		
+
+skynet_socket_sendbuffer
+	write at once		'W'
+	async write 		'D'
+	
+poll:
+	'W'		
+
 */
 struct context_t;
 

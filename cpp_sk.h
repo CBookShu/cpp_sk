@@ -1,5 +1,9 @@
 #pragma once
 #include "iguana/json_reader.hpp"
+#include <tuple>
+#include <ylt/struct_pack.hpp>
+#include <ylt/util/function_name.h>
+#include <ylt/util/type_traits.h>
 #include "sk_socket.h"
 #include "utils.h"
 #include <any>
@@ -136,6 +140,7 @@ enum PTYPE {
   PTYPE_RESERVED_DEBUG = 9,
   PTYPE_RESERVED_LUA = 10,
   PTYPE_RESERVED_SNAX = 11,
+  PTYPE_RESERVED_CPP = 12,
 
   // 不会组合到size的位
   PTYPE_DONTCOPY = 16,
@@ -148,13 +153,13 @@ struct skynet_message {
   std::any data;
   // [sizeof(size_t)-8, sizeof(size_t)) type
   // [0, sizeof(size_t)-8) data len
-  size_t sz = 0;
+  PTYPE t;
+  
 
-  ~skynet_message() { int a; }
+  ~skynet_message() { }
 
   void reserved_data() {
-    data = nullptr;
-    sz = 0;
+    t = PTYPE::PTYPE_TEXT;
   }
 };
 
@@ -254,7 +259,7 @@ struct module_t {
 
 struct context_t {
   typedef int (*skynet_cb)(struct context_t *context, int type, int session,
-                           uint32_t source, std::any &a, size_t sz);
+                           uint32_t source, std::any &a);
 
   std::unique_ptr<module_base_t> instance;
   std::any ud;
@@ -483,17 +488,11 @@ struct skynet_app {
     }
     smsg.session = 0;
     smsg.data = std::move(msg);
-    smsg.sz = msg.size() + 1;
-    smsg.sz |= (uint32_t)((size_t)PTYPE_TEXT << MESSAGE_TYPE_SHIFT);
+    smsg.t = PTYPE_TEXT;
     context_push(logger, smsg);
   }
 
   static bool context_push(handle_t handle, skynet_message &msg);
-
-  static int send(context_t *ctx, uint32_t source, uint32_t destination,
-                  int type, int session, void *msg, size_t sz);
-  // static int context_send(context_t *context, void * msg, size_t sz, uint32_t
-  // source, int type, int session);
 
   static void context_endless(handle_t handle);
 
@@ -556,4 +555,280 @@ struct skynet_app {
     }
   }
 };
+
+class module_mid_t : public cpp_sk::module_base_t {
+public:
+  std::weak_ptr<context_t> wctx;
+  struct socket_node_t {
+    int id = -1;
+    bool connectd = false;
+    std::string rbuff;
+
+    std::function<void(int)> cb;
+    std::function<size_t(int, std::string_view)> on_data;
+  };
+
+  struct cpp_rpc_param {
+    uint32_t funcid;
+    std::string buffer;
+  };
+
+  std::unordered_map<int, socket_node_t> socket_nodes;
+  std::unordered_map<int, std::function<void()>> timeout_nodes;
+  std::unordered_map<uint32_t, std::function<std::string(std::string_view)>> cpp_rpc_router;
+  std::unordered_map<int, std::function<void(std::string_view)>> cpp_rpc_cbs;
+
+  static void new_service(std::string_view name, std::string_view param) {
+    context_t::create(name, param);
+  }
+
+  static bool register_name(std::string_view name, handle_t handle) {
+    return handle_storage_t::ins().handle_namehandle(handle, name.data());
+  }
+
+    template <typename Tp, std::size_t...Idx>
+    inline decltype(auto) struck_deserialize_args_imp(std::string_view data, std::index_sequence<Idx...>) {
+        return struct_pack::deserialize<std::tuple_element_t<Idx, Tp>...>(data);
+    }
+
+    template <typename Tp>
+    inline decltype(auto) struck_deserialize_args(std::string_view data) {
+        return struck_deserialize_args_imp<Tp>(data, std::make_index_sequence<std::tuple_size_v<Tp>>());
+    }
+
+  template <auto F, typename Self>
+  void register_rpc_func(Self* self) {
+    constexpr auto name = coro_rpc::get_func_name<F>();
+    constexpr auto id =
+        struct_pack::MD5::MD5Hash32Constexpr(name.data(), name.length());
+    cpp_rpc_router[id] = [this,self](std::string_view str) mutable {
+        using T = decltype(F);
+        using return_type = util::function_return_type_t<T>;
+        using param_type = util::function_parameters_t<T>;
+        if constexpr(std::is_void_v<return_type>) {
+            if constexpr(std::is_void_v<param_type>) {
+              std::apply(F, std::forward_as_tuple(*this));
+            } else {
+              param_type args{};
+              if(struct_pack::deserialize_to(args, str)) {
+                std::apply(F, std::tuple_cat(std::forward_as_tuple(*this), std::tie(std::move(args))));
+              }
+            }
+            return std::string();
+        } else {
+          if constexpr(std::is_void_v<param_type>) {
+            auto r = std::apply(F, std::forward_as_tuple(*this));
+            return struct_pack::serialize<std::string>(std::move(r));
+          } else {
+            auto args_tp = struck_deserialize_args<param_type>(str);
+            if(args_tp) {
+                return struct_pack::serialize<std::string>(
+                    std::apply(F, 
+                    std::tuple_cat(
+                    std::forward_as_tuple(*self),
+                    args_tp.value())
+                ));
+                return std::string();
+            }
+          }
+        }
+        return std::string();
+    };
+  }
+
+  template <typename...Args, typename F>
+  bool send_request(handle_t handle, std::string_view cmd, F&&f, Args&&...args) {
+    auto ctx = handle_storage_t::ins().handle_grab(handle);
+    if (!ctx) {
+        return false;
+    }
+
+    cpp_rpc_param param;
+    param.funcid = struct_pack::MD5::MD5Hash32Constexpr(cmd.data(), cmd.length());
+    struct_pack::serialize_to(param.buffer, std::forward<Args>(args)...);
+
+    auto self_ctx = wctx.lock();
+    skynet_message msg;
+    msg.source = self_ctx->handle;
+    msg.session = self_ctx->newsession();
+    msg.t = PTYPE_RESERVED_CPP;
+    msg.data = std::move(param);
+
+    cpp_rpc_cbs[msg.session] = std::move(f);
+
+    return skynet_app::context_push(handle, msg);
+  }
+
+  template <typename...Args, typename F>
+  bool send_request(std::string_view name, std::string_view cmd, F&& f, Args&&...args) {
+    auto handle = handle_storage_t::ins().handle_finename(name.data());
+    return send_request(handle, cmd, std::forward<F>(f), std::forward<Args>(args)...);
+  }
+
+  int timeout(cpp_sk::context_t *ctx, int timeout, std::function<void()> cb) {
+    auto id = ctx->newsession();
+    if (auto ret =
+            cpp_sk::timer::timer::ins().timeout(ctx->handle, timeout, id);
+        id == ret) {
+      timeout_nodes[id] = std::move(cb);
+      return id;
+    }
+    return -1;
+  }
+
+  template <typename F>
+  int listen(cpp_sk::context_t *ctx, std::string_view ip, int port, int backlog,
+             F &&f) {
+    auto id = cpp_sk::server::ins().socket_listen(ctx, "0.0.0.0", 8888, 1024);
+    if (id < 0) {
+      return id;
+    }
+    socket_nodes[id] = {.cb = std::move(f)};
+    return id;
+  }
+  template <typename F>
+  void start_accept(cpp_sk::context_t *ctx, int id, F &&f) {
+    if (auto it = socket_nodes.find(id); it != socket_nodes.end()) {
+      if (it->second.connectd) {
+        it->second.cb = std::move(f);
+        cpp_sk::server::ins().socket_start(ctx, id);
+      }
+    }
+  }
+
+  template <typename F>
+  int connect(cpp_sk::context_t *ctx, std::string_view ip, int port, F &&f) {
+    int id = cpp_sk::server::ins().socket_connect(ctx, ip.data(), port);
+    if (id < 0) {
+      return id;
+    }
+    socket_nodes[id] = {.cb = std::move(f)};
+    return id;
+  }
+
+  template <typename F> void start_tcp(cpp_sk::context_t *ctx, int id, F &&f) {
+    if (auto it = socket_nodes.find(id); it != socket_nodes.end()) {
+      if (it->second.connectd) {
+        it->second.on_data = std::move(f);
+        cpp_sk::server::ins().socket_start(ctx, id);
+      }
+    }
+  }
+
+  int send_buffer(cpp_sk::context_t *ctx, int id, std::string buf) {
+    if (auto it = socket_nodes.find(id); it != socket_nodes.end()) {
+      return cpp_sk::server::ins().socket_send(ctx, id, std::move(buf));
+    }
+    return -1;
+  }
+
+  static void close_socket(cpp_sk::context_t *ctx, int id) {
+    cpp_sk::server::ins().close_socket(ctx, id);
+  }
+
+  template <typename... Args>
+  static void log(std::format_string<Args...> fmt, Args &&...args) {
+    cpp_sk::skynet_app::error(nullptr, std::move(fmt),
+                              std::forward<Args>(args)...);
+  }
+
+  virtual bool init(cpp_sk::context_ptr_t &ctx,
+                    std::string_view param) override {
+    ctx->cb = &module_mid_t::cb;
+    ctx->ud = this;
+    wctx = ctx;
+    return true;
+  };
+
+  virtual void on_text(cpp_sk::context_t *context, int session, uint32_t source, std::string& str) {
+    
+  }
+
+  virtual void on_response(cpp_sk::context_t *context, int session, uint32_t source, std::any& a) {
+    if (auto it = cpp_rpc_cbs.find(session); it != cpp_rpc_cbs.end()) {
+        auto cb = std::move(it->second);
+        cpp_rpc_cbs.erase(it);
+        auto str = std::any_cast<std::string>(&a);
+        cb(*str);
+    }
+  }
+
+  virtual void on_socket(cpp_sk::context_t *context, int session, uint32_t source, cpp_sk::skynet_socket_message& m) {
+    if (auto it = socket_nodes.find(m.id); it != socket_nodes.end()) {
+        if (m.type == cpp_sk::skynet_socket_type::connect) {
+          if (!it->second.connectd) {
+            it->second.connectd = true;
+            if (it->second.cb) {
+              auto cb = std::move(it->second.cb);
+              it->second.id = m.id;
+              cb(m.id);
+            }
+          } else {
+          }
+        } else if (m.type == cpp_sk::skynet_socket_type::close) {
+          socket_nodes.erase(it);
+        } else if (m.type == cpp_sk::skynet_socket_type::error) {
+          close_socket(context, m.id);
+        } else if (m.type == cpp_sk::skynet_socket_type::accept) {
+          int newid = m.ud;
+          socket_nodes[newid] = {.id = m.ud, .connectd = true};
+          if (it->second.cb) {
+            it->second.cb(m.ud);
+          }
+        } else if (m.type == cpp_sk::skynet_socket_type::data) {
+          it->second.rbuff.append(m.buffer.ptr(), m.buffer.size());
+          if (it->second.on_data) {
+            auto sz = it->second.on_data(it->second.id, it->second.rbuff);
+            if (sz > 0) {
+              it->second.rbuff = it->second.rbuff.substr(sz);
+            }
+          }
+        }
+      } else {
+        close_socket(context, m.id);
+      }
+  }
+
+  virtual void on_rpc_cpp(cpp_sk::context_t *context, int session, uint32_t source, cpp_rpc_param& param) {
+    if(auto it = cpp_rpc_router.find(param.funcid); it != cpp_rpc_router.end()) {
+      auto r = it->second(param.buffer);
+      skynet_message msg;
+      msg.source = context->handle;
+      msg.data = std::move(r);
+      msg.t = PTYPE_RESPONSE;
+      msg.session = session;
+      skynet_app::context_push(source, msg);
+    }
+  }
+
+  static int cb(cpp_sk::context_t *context, int type, int session,
+                uint32_t source, std::any &a) {
+    auto *t = std::any_cast<module_mid_t *>(context->ud);
+    if (type == cpp_sk::PTYPE_TEXT) {
+      auto *s = std::any_cast<std::string>(&a);
+      t->on_text(context, session, source, *s);
+    } else if (type == cpp_sk::PTYPE_RESPONSE) {
+      if (auto it = t->timeout_nodes.find(session);
+          it != t->timeout_nodes.end()) {
+        std::function<void()> cb = std::move(it->second);
+        t->timeout_nodes.erase(it);
+        cb();
+      } else {
+        t->on_response(context, session, source, a);
+      }
+    } else if (type == cpp_sk::PTYPE_SOCKET) {
+      cpp_sk::skynet_socket_message *m =
+          std::any_cast<cpp_sk::skynet_socket_message>(&a);
+      t->on_socket(context, session, source, *m);
+    } else if(type == cpp_sk::PTYPE_RESERVED_CPP) {
+      auto param = std::any_cast<cpp_rpc_param >(&a);
+      if(param) {
+        t->on_rpc_cpp(context, session, source, *param);
+      }
+    }
+    return 0;
+  }
+};
+
+
 } // namespace cpp_sk

@@ -204,14 +204,14 @@ int cpp_sk::server::socket_send(context_t* ctx, int id, std::string buf)
         socket_message result;
         result.id = slot.id;
 
+        if (offset == 0) {
+            slot.wlist.emplace_back(std::move(buf));
+        } else if(offset < buf.size()) {
+            slot.wlist.emplace_back(buf.substr(offset));
+        }
+
         if (!slot.wlist_lock.trylock()) {
             // writting is doing
-            // append buff
-            if (offset == 0) {
-                slot.wlist.emplace_back(std::move(buf));
-            } else {
-                slot.wlist.emplace_back(buf.substr(offset));
-            }
             co_return;
         }
         asio::error_code ec;
@@ -267,7 +267,7 @@ int cpp_sk::server::socket_send(context_t* ctx, int id, std::string buf)
             slot.clear();
             slot.type.store(socket_type::invalid);
         }
-        else {
+        else if(ec){
             result.opaque = slot.opaque;
             result.data.assgin(ec.message());
             slot.type.store(socket_type::halfclose_write);
@@ -376,7 +376,7 @@ void server::forward_message(skynet_socket_type type, socket_message& result) {
 
   smsg.source = 0;
   smsg.session = 0;
-  smsg.sz |= ((size_t)PTYPE_SOCKET << MESSAGE_TYPE_SHIFT);
+  smsg.t = PTYPE_SOCKET;
 
   skynet_app::context_push(result.opaque, smsg);
 }

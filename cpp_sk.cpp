@@ -254,8 +254,11 @@ context_ptr_t context_t::create(std::string_view name, std::string_view param) {
     handle_storage_t::ins().handle_retire(ctx->handle);
     ctx->queue->mq_release([source = ctx->handle](skynet_message *m) {
       assert(source != 0);
-      skynet_app::send(nullptr, source, m->source, PTYPE_ERROR, m->session,
-                       nullptr, 0);
+      skynet_message msg;
+      msg.source = source;
+      msg.session = m->session;
+      msg.t = PTYPE_ERROR;
+      skynet_app::context_push(source, msg);
     });
   }
 
@@ -270,11 +273,10 @@ context_t::~context_t() {
 }
 
 void context_t::dispatch(skynet_message &msg) {
-  int type = msg.sz >> MESSAGE_TYPE_SHIFT;
-  size_t sz = msg.sz & MESSAGE_TYPE_MASK;
+  int type = msg.t;
   message_count++;
 
-  int reserve_msg = cb(this, type, msg.session, msg.source, msg.data, sz);
+  int reserve_msg = cb(this, type, msg.session, msg.source, msg.data);
   if (reserve_msg) {
     msg.reserved_data();
   }
@@ -346,58 +348,6 @@ static void _filter_args(context_t *context, int type, int *session,
   *sz |= (size_t)type << MESSAGE_TYPE_SHIFT;
 }
 
-int skynet_app::send(context_t *context, uint32_t source, uint32_t destination,
-                     int type, int session, void *data, size_t sz) {
-  if ((sz & MESSAGE_TYPE_MASK) != sz) {
-    skynet_app::error(context, "The message to {:x} is too large", destination);
-    if (type & PTYPE_TAG_DONTCOPY) {
-      std::free(data);
-    }
-    return -2;
-  }
-
-  _filter_args(context, type, &session, (void **)&data, &sz);
-
-  if (source == 0) {
-    source = context->handle;
-  }
-
-  if (destination == 0) {
-    if (data) {
-      skynet_app::error(context, "Destination address can't be 0");
-      std::free(data);
-      return -1;
-    }
-
-    return session;
-  }
-
-  if (harbor_t::ins().message_isremote(destination)) {
-    // TODO: 跨进程
-  } else {
-    struct skynet_message smsg;
-    smsg.source = source;
-    smsg.session = session;
-    smsg.data = (char *)data;
-    smsg.sz = sz;
-    if (!skynet_app::context_push(destination, smsg)) {
-      std::free(data);
-      return -1;
-    }
-  }
-  return session;
-}
-
-// int skynet_app::context_send(context_t *context, void * msg, size_t sz,
-// uint32_t source, int type, int session) {
-//     struct skynet_message smsg;
-//     smsg.source = source;
-//     smsg.session = session;
-//     smsg.data = (char*)msg;
-//     smsg.sz = sz | (size_t)type << MESSAGE_TYPE_SHIFT;
-//     context->queue->mq_push(smsg);
-// }
-
 void skynet_app::context_endless(handle_t handle) {
   auto ctx = handle_storage_t::ins().handle_grab(handle);
   if (!ctx) {
@@ -463,8 +413,11 @@ message_queue *skynet_app::context_message_dispatch(skynet_monitor *m,
   if (!ctx) {
     q->mq_release([source = handle](skynet_message *m) {
       assert(source);
-      skynet_app::send(nullptr, source, m->source, PTYPE_ERROR, m->session,
-                       nullptr, 0);
+      skynet_message msg;
+      msg.source = source;
+      msg.session = m->session;
+      msg.t = PTYPE_ERROR;
+      skynet_app::context_push(source, msg);
     });
   }
 
@@ -593,8 +546,7 @@ int timer::timeout(handle_t handle, int32_t timeout, int session) {
     skynet_message message;
     message.source = 0;
     message.session = session;
-    message.data = NULL;
-    message.sz = (size_t)PTYPE_RESPONSE << MESSAGE_TYPE_SHIFT;
+    message.t = PTYPE_RESPONSE;
     if (!skynet_app::context_push(handle, message)) {
       return -1;
     }
@@ -655,8 +607,7 @@ void timer::dispatch(std::unique_ptr<timer_node_event> current) {
     skynet_message message;
     message.source = 0;
     message.session = current->session;
-    // message.data = nullptr;
-    message.sz = (size_t)PTYPE_RESPONSE << MESSAGE_TYPE_SHIFT;
+    message.t = PTYPE_RESPONSE;
 
     skynet_app::context_push(current->handle, message);
     current = std::move(current->next);

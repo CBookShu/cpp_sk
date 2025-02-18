@@ -3,5 +3,5 @@
   "harbor":1,
   "profile":true,
   "logger":"log.txt",
-  "bootstrap": "test get"
+  "bootstrap": "pingpong_server"
 }
