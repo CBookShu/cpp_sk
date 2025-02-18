@@ -56,9 +56,14 @@ int server::socket_listen(context_t* ctx, const char* host, int port, int backlo
     auto ep = ip::tcp::endpoint{addr, static_cast<uint16_t>(port)};
     socket_t::tcp_ns::acceptor acceptor{poll};
     acceptor.open(ep.protocol());
-    acceptor.bind(ep);
-    acceptor.listen(backlog);
+#ifdef __GNUC__
     acceptor.set_option(asio::socket_base::reuse_address{true});
+#endif
+    acceptor.bind(ep);
+#ifdef _MSC_VER
+    acceptor.set_option(asio::socket_base::reuse_address{true});
+#endif
+    acceptor.listen(backlog);
 
     auto id = new_fd();
     auto& slot = get_slot(id);

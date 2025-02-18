@@ -82,21 +82,6 @@ public:
 
 int main(int argc, char **argv) {
   using namespace cpp_sk;
-  using T = decltype(&pingpong_client::rpc_call);
-  using return_type = util::function_return_type_t<T>;
-  using param_type = util::function_parameters_t<T>;
-  auto name = typeid(T).name();
-  auto name1 = typeid(return_type).name();
-  auto name2 = typeid(param_type).name();
-
-  int a = 10;
-  std::string s = "hel";
-  auto buff = struct_pack::serialize<std::string>(a, s);
-  std::string_view str = buff;
-  param_type args;
-  auto b = struct_pack::deserialize_to(args, str);
-
-
   config_t config;
   const char *config_path = "config.json";
   if (argc == 2) {
