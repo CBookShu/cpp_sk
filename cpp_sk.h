@@ -578,8 +578,12 @@ public:
   std::unordered_map<uint32_t, std::function<std::string(std::string_view)>> cpp_rpc_router;
   std::unordered_map<int, std::function<void(std::string_view)>> cpp_rpc_cbs;
 
-  static void new_service(std::string_view name, std::string_view param) {
-    context_t::create(name, param);
+  context_ptr_t self() {
+    return wctx.lock();
+  }
+
+  static auto new_service(std::string_view name, std::string_view param) {
+    return context_t::create(name, param);
   }
 
   static bool register_name(std::string_view name, handle_t handle) {
@@ -750,6 +754,10 @@ public:
         cpp_rpc_cbs.erase(it);
         auto str = std::any_cast<std::string>(&a);
         cb(*str);
+    } else if (auto it = timeout_nodes.find(session); it != timeout_nodes.end()) {
+        auto cb = std::move(it->second);
+        timeout_nodes.erase(it);
+        cb();
     }
   }
 
@@ -808,14 +816,7 @@ public:
       auto *s = std::any_cast<std::string>(&a);
       t->on_text(context, session, source, *s);
     } else if (type == cpp_sk::PTYPE_RESPONSE) {
-      if (auto it = t->timeout_nodes.find(session);
-          it != t->timeout_nodes.end()) {
-        std::function<void()> cb = std::move(it->second);
-        t->timeout_nodes.erase(it);
-        cb();
-      } else {
-        t->on_response(context, session, source, a);
-      }
+       t->on_response(context, session, source, a);
     } else if (type == cpp_sk::PTYPE_SOCKET) {
       cpp_sk::skynet_socket_message *m =
           std::any_cast<cpp_sk::skynet_socket_message>(&a);
