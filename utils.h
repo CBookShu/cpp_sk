@@ -2,10 +2,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <concepts>
 #include <cstdlib>
 #include <shared_mutex>
 #include <string>
 #include <string_view>
+#include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -110,8 +113,17 @@ template <typename F> struct defer_t {
   ~defer_t() { f(); }
 };
 
-template<class... Ts> struct overload : Ts... { using Ts::operator()...; };
-template<class... Ts> overload(Ts...) -> overload<Ts...>;
+template <class... Ts> struct overload : Ts... {
+  using Ts::operator()...;
+};
+template <class... Ts> overload(Ts...) -> overload<Ts...>;
+
+template <typename T> struct is_tuple : public std::false_type {};
+
+template <typename... Args>
+struct is_tuple<std::tuple<Args...>> : public std::true_type {};
+
+template <typename T> constexpr auto is_tuple_v = is_tuple<T>::value;
 
 struct algo {
   static constexpr std::vector<std::string_view>
@@ -157,4 +169,4 @@ struct algo {
     }
   }
 };
-}
+} // namespace cpp_sk
