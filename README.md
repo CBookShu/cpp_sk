@@ -7,3 +7,5 @@ main.cpp 中做了一个pingpong 示例，附带一个 rpc的调用。
 TODO:
 1. C++ 协程
 2. lua 绑定
+3. 仿照skynet 的cluser 或者 自己做一个简单的协议支持 remote
+4. module base 改成纯模板，不再使用虚基类
