@@ -21,21 +21,22 @@ struct logger : public module_mid_t {
     return true;
   };
 
-  virtual void on_text(cpp_sk::context_t *context, int session, uint32_t source, std::string& str) override {
-      auto now = timer::ins().now();
-      auto zone = std::chrono::current_zone();
-      auto current_point = std::chrono::system_clock::now();
-      auto timefmt =
-          std::format("{}", std::chrono::zoned_time{zone, current_point});
-      auto output =
-          std::format("[{}][{:08x}]{}\n",
-                      std::chrono::zoned_time{zone, current_point}, source, str);
-      if (fp) {
-        fwrite(output.c_str(), output.size(), 1, fp);
-        fflush(fp);
-      }
-      fwrite(output.c_str(), output.size(), 1, stdout);
-      fflush(stdout); 
+  virtual void on_text(cpp_sk::context_t *context, int session, uint32_t source,
+                       std::string &str) override {
+    auto now = timer::ins().now();
+    auto zone = std::chrono::current_zone();
+    auto current_point = std::chrono::system_clock::now();
+    auto timefmt =
+        std::format("{}", std::chrono::zoned_time{zone, current_point});
+    auto output =
+        std::format("[{}][{:08x}]{}\n",
+                    std::chrono::zoned_time{zone, current_point}, source, str);
+    if (fp) {
+      fwrite(output.c_str(), output.size(), 1, fp);
+      fflush(fp);
+    }
+    fwrite(output.c_str(), output.size(), 1, stdout);
+    fflush(stdout);
   }
 };
 

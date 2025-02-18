@@ -17,7 +17,7 @@
 
 namespace cpp_sk {
 /*
-* 
+*
 
 skynet socket process
 ctx: worker thread
@@ -25,87 +25,87 @@ server single thread poll
 
 socket::type state transition
 invalid
-	get-> reserve
-	
+        get-> reserve
+
 listen->plisten
-	start->listen
+        start->listen
 
 paccept[listen accept new fd]:
-	start-> connected
+        start-> connected
 
 connect->
-	at once call: connect
-		ok:	connected
-		err[in process]: connecting
-			poll ok:
-				connected
-	start:
-		type is keep
+        at once call: connect
+                ok:	connected
+                err[in process]: connecting
+                        poll ok:
+                                connected
+        start:
+                type is keep
 
-	
+
 
 skynet_socket_connect
-	'O'
+        'O'
 
 poll:
-	open_socket
-		getaddrinfo-> socket -> keepalive,noblock-> connect
-			connect ok: SOCKET_TYPE_CONNECTED,SOCKET_OPEN
-			connect err: SOCKET_TYPE_CONNECTING,continue
-	SOCKET_OPEN
-		data = ip
-		forward_message(SKYNET_SOCKET_TYPE_CONNECT, true, &result);
-		
-		
+        open_socket
+                getaddrinfo-> socket -> keepalive,noblock-> connect
+                        connect ok: SOCKET_TYPE_CONNECTED,SOCKET_OPEN
+                        connect err: SOCKET_TYPE_CONNECTING,continue
+        SOCKET_OPEN
+                data = ip
+                forward_message(SKYNET_SOCKET_TYPE_CONNECT, true, &result);
+
+
 skynet_socket_listen
-	do_listen
-	'L'
+        do_listen
+        'L'
 poll:
-	listen_socket
-		SOCKET_TYPE_PLISTEN
-		data = error
-			SOCKET_OPEN or SOCKET_ERR
-		
-		forward_message(SKYNET_SOCKET_TYPE_CONNECT, true, &result);
-		
+        listen_socket
+                SOCKET_TYPE_PLISTEN
+                data = error
+                        SOCKET_OPEN or SOCKET_ERR
+
+                forward_message(SKYNET_SOCKET_TYPE_CONNECT, true, &result);
+
 
 skynet_socket_close
-	'K'
+        'K'
 poll:
-	close_socket
-		-1	when write buff not empty; shutdown read first and close later
-		SOCKET_CLOSE
-	
-	SOCKET_CLOSE:
-		SKYNET_SOCKET_TYPE_CLOSE
-	
+        close_socket
+                -1	when write buff not empty; shutdown read first and close
+later SOCKET_CLOSE
+
+        SOCKET_CLOSE:
+                SKYNET_SOCKET_TYPE_CLOSE
+
 
 skynet_socket_start
-	socket_server_start
-	'R'
+        socket_server_start
+        'R'
 poll:
-	paccept -> connected
-	plisten->listen
-	connected->connected
-	
-	all fd-> enable read
-	
-	
+        paccept -> connected
+        plisten->listen
+        connected->connected
+
+        all fd-> enable read
+
+
 here ignore it
 socket_server_shutdown
-	'K'
+        'K'
 poll:
-	close_socket
-		must call force_close
-		
-		
+        close_socket
+                must call force_close
+
+
 
 skynet_socket_sendbuffer
-	write at once		'W'
-	async write 		'D'
-	
+        write at once		'W'
+        async write 		'D'
+
 poll:
-	'W'		
+        'W'
 
 */
 struct context_t;
