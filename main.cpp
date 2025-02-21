@@ -4,21 +4,29 @@
 #include "logger.h"
 #include "sk_socket.h"
 #include "utils.h"
+#include "ylt/coro_rpc/impl/default_config/coro_rpc_config.hpp"
 #include "ylt/struct_pack.hpp"
+#include "ylt/coro_rpc/coro_rpc_server.hpp"
 #include <any>
 #include <atomic>
 #include <cassert>
 #include <cmath>
+#include <concepts>
+#include <cstddef>
 #include <deque>
+#include <functional>
 #include <iguana/iguana.hpp>
 #include <iguana/prettify.hpp>
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <type_traits>
+#include <utility>
+#include "cpp_rpc.h"
 
 namespace cpp_sk {
 
-class pingpong_server : public module_mid_t {
+class pingpong_server : public cpp_rpc::cpp_rpc_service {
 public:
   virtual bool init(cpp_sk::context_ptr_t &ctx,
                     std::string_view param) override {
@@ -28,32 +36,27 @@ public:
 
     timeout(ctx.get(), 50, [this, ctx = ctx.get()]() {
       std::string s = "hello";
-      send_request(
+      send_request<int, std::string>(
           "pingpong_client", "cpp_sk::pingpong_client::rpc_call_1_2",
-          [](std::string_view s) {
-            int res;
-            if (!struct_pack::deserialize_to(res, s)) {
-              log("rpc_call_1_2 rsp res:{}", res);
-            }
+          [](cpp_rpc::rpc_result r) {
+            int res = r.as<int>();
+            log("rpc_call_1_2 rsp res:{}", res);
           },
           10, s);
-      send_request(
+      send_request<int>(
           "pingpong_client", "cpp_sk::pingpong_client::rpc_call_0_1",
-          [](std::string_view s) {
-            assert(s.empty());
-            log("rpc_call_0_1 rsp empty");
+          [](cpp_rpc::rpc_result r) {
+            assert(r.result()->len == 0);
           },
           10);
-      send_request(
+      send_request<std::string>(
           "pingpong_client", "cpp_sk::pingpong_client::rpc_call_1_1",
-          [](std::string_view s) {
-            int res;
-            if (!struct_pack::deserialize_to(res, s)) {
-              assert(res == 1);
-              log("rpc_call_1_1 rsp res:{}", res);
-            }
+          [](cpp_rpc::rpc_result r) {
+            int res = r.as<int>();
+            assert(res == 1);
+            log("rpc_call_1_1 rsp res:{}", res);
           },
-          std::string("hello world"));
+          "hello world");
     });
 
     listen(ctx.get(), "0.0.0.0", 8888, 1024, [this, ctx = ctx.get()](int id) {
@@ -71,7 +74,7 @@ public:
   }
 };
 
-class pingpong_client : public module_mid_t {
+class pingpong_client : public cpp_rpc::cpp_rpc_service {
 public:
   int rpc_call_1_2(int a, std::string s) {
     log("rpc_call_1_2 a:{}, s:{}", a, s);
@@ -126,12 +129,11 @@ int main(int argc, char **argv) {
   if (argc == 2) {
     config_path = argv[1];
   }
+
   config.read(config_path);
-  module_t::register_module_func("logger", module_t::creator<logger>::create);
-  module_t::register_module_func("pingpong_server",
-                                 module_t::creator<pingpong_server>::create);
-  module_t::register_module_func("pingpong_client",
-                                 module_t::creator<pingpong_client>::create);
+  module_t::register_module_func<logger>("logger");
+  module_t::register_module_func<pingpong_server>("pingpong_server");
+  module_t::register_module_func<pingpong_client>("pingpong_client");
   skynet_app::start(config);
   return 0;
 }

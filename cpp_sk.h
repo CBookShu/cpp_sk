@@ -2,6 +2,7 @@
 #include "iguana/json_reader.hpp"
 #include "sk_socket.h"
 #include "utils.h"
+#include <algorithm>
 #include <any>
 #include <atomic>
 #include <cassert>
@@ -31,14 +32,10 @@
 #include <string_view>
 #include <sys/types.h>
 #include <thread>
-#include <tuple>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
-#include <ylt/struct_pack.hpp>
-#include <ylt/util/function_name.h>
-#include <ylt/util/type_traits.h>
 
 namespace cpp_sk {
 
@@ -241,17 +238,15 @@ struct module_t {
                             std::equal_to<>>
       gMap;
 
-  static void register_module_func(std::string name, creator_func_t func);
-  static module_base_t *create(std::string_view name);
-
-  template <typename M> struct creator {
+  template<typename M>
+  static void register_module_func(std::string name) {
     static_assert(std::is_base_of_v<module_base_t, M>, "M no support");
-
-    static module_base_t *create() {
+    gMap[std::move(name)] = +[]{
       auto *m = new M();
       return static_cast<module_base_t *>(m);
-    }
-  };
+    };
+  }
+  static module_base_t *create(std::string_view name);
 };
 
 struct context_t {
@@ -565,16 +560,9 @@ public:
     std::function<size_t(int, std::string_view)> on_data;
   };
 
-  struct cpp_rpc_param {
-    uint32_t funcid;
-    std::string buffer;
-  };
-
   std::unordered_map<int, socket_node_t> socket_nodes;
   std::unordered_map<int, std::function<void()>> timeout_nodes;
-  std::unordered_map<uint32_t, std::function<std::string(std::string_view)>>
-      cpp_rpc_router;
-  std::unordered_map<int, std::function<void(std::string_view)>> cpp_rpc_cbs;
+  std::unordered_map<int, std::function<void(std::string_view)>> response_cbs;
 
   context_ptr_t self() { return wctx.lock(); }
 
@@ -584,104 +572,6 @@ public:
 
   static bool register_name(std::string_view name, handle_t handle) {
     return handle_storage_t::ins().handle_namehandle(handle, name.data());
-  }
-
-  template <typename Tp, std::size_t... Idx>
-  static inline decltype(auto)
-  struck_deserialize_args_imp(std::string_view data,
-                              std::index_sequence<Idx...>) {
-    return struct_pack::deserialize<std::tuple_element_t<Idx, Tp>...>(data);
-  }
-
-  template <typename Tp>
-  static inline decltype(auto) struck_deserialize_args(std::string_view data) {
-    return struck_deserialize_args_imp<Tp>(
-        data, std::make_index_sequence<std::tuple_size_v<Tp>>());
-  }
-
-  template <auto F, typename Self> void register_rpc_func(Self *self) {
-    constexpr auto name = coro_rpc::get_func_name<F>();
-    constexpr auto id =
-        struct_pack::MD5::MD5Hash32Constexpr(name.data(), name.length());
-    cpp_rpc_router[id] = [self](std::string_view str) mutable {
-      using T = decltype(F);
-      using return_type = util::function_return_type_t<T>;
-      using param_type = util::function_parameters_t<T>;
-      if constexpr (std::is_void_v<return_type>) {
-        if constexpr (std::is_void_v<param_type>) {
-          std::apply(F, std::forward_as_tuple(*self));
-        } else {
-          param_type args{};
-          if constexpr (std::tuple_size_v<param_type> == 1) {
-            if (struct_pack::deserialize_to(std::get<0>(args), str)) {
-              return std::string();
-            }
-          } else {
-            if (struct_pack::deserialize_to(args, str)) {
-              return std::string();
-            }
-          }
-          if (!struct_pack::deserialize_to(std::get<0>(args), str)) {
-            std::apply(F, std::tuple_cat(std::forward_as_tuple(*self),
-                                         std::move(args)));
-          }
-        }
-        return std::string();
-      } else {
-        if constexpr (std::is_void_v<param_type>) {
-          return struct_pack::serialize<std::string>(
-              std::apply(F, std::forward_as_tuple(*self)));
-        } else {
-          param_type args{};
-          if constexpr (std::tuple_size_v<param_type> == 1) {
-            if (struct_pack::deserialize_to(std::get<0>(args), str)) {
-              return std::string();
-            }
-          } else {
-            if (struct_pack::deserialize_to(args, str)) {
-              return std::string();
-            }
-          }
-          return struct_pack::serialize<std::string>(
-              std::apply(F, std::tuple_cat(std::forward_as_tuple(*self),
-                                           std::move(args))));
-        }
-      }
-      return std::string();
-    };
-  }
-
-  template <typename... Args, typename F>
-  bool send_request(handle_t handle, std::string_view cmd, F &&f,
-                    Args &&...args) {
-    auto ctx = handle_storage_t::ins().handle_grab(handle);
-    if (!ctx) {
-      return false;
-    }
-
-    cpp_rpc_param param;
-    param.funcid =
-        struct_pack::MD5::MD5Hash32Constexpr(cmd.data(), cmd.length());
-    struct_pack::serialize_to(param.buffer, std::forward<Args>(args)...);
-
-    auto self_ctx = wctx.lock();
-    skynet_message msg;
-    msg.source = self_ctx->handle;
-    msg.session = self_ctx->newsession();
-    msg.t = PTYPE_RESERVED_CPP;
-    msg.data = std::move(param);
-
-    cpp_rpc_cbs[msg.session] = std::move(f);
-
-    return skynet_app::context_push(handle, msg);
-  }
-
-  template <typename... Args, typename F>
-  bool send_request(std::string_view name, std::string_view cmd, F &&f,
-                    Args &&...args) {
-    auto handle = handle_storage_t::ins().handle_finename(name.data());
-    return send_request(handle, cmd, std::forward<F>(f),
-                        std::forward<Args>(args)...);
   }
 
   int timeout(cpp_sk::context_t *ctx, int timeout, std::function<void()> cb) {
@@ -764,9 +654,9 @@ public:
 
   virtual void on_response(cpp_sk::context_t *context, int session,
                            uint32_t source, std::any &a) {
-    if (auto it = cpp_rpc_cbs.find(session); it != cpp_rpc_cbs.end()) {
+    if (auto it = response_cbs.find(session); it != response_cbs.end()) {
       auto cb = std::move(it->second);
-      cpp_rpc_cbs.erase(it);
+      response_cbs.erase(it);
       auto str = std::any_cast<std::string>(&a);
       cb(*str);
     } else if (auto it = timeout_nodes.find(session);
@@ -815,17 +705,7 @@ public:
   }
 
   virtual void on_rpc_cpp(cpp_sk::context_t *context, int session,
-                          uint32_t source, cpp_rpc_param &param) {
-    if (auto it = cpp_rpc_router.find(param.funcid);
-        it != cpp_rpc_router.end()) {
-      auto r = it->second(param.buffer);
-      skynet_message msg;
-      msg.source = context->handle;
-      msg.data = std::move(r);
-      msg.t = PTYPE_RESPONSE;
-      msg.session = session;
-      skynet_app::context_push(source, msg);
-    }
+                          uint32_t source, std::string &param) {
   }
 
   static int cb(cpp_sk::context_t *context, int type, int session,
@@ -841,7 +721,7 @@ public:
           std::any_cast<cpp_sk::skynet_socket_message>(&a);
       t->on_socket(context, session, source, *m);
     } else if (type == cpp_sk::PTYPE_RESERVED_CPP) {
-      auto param = std::any_cast<cpp_rpc_param>(&a);
+      auto param = std::any_cast<std::string>(&a);
       if (param) {
         t->on_rpc_cpp(context, session, source, *param);
       }

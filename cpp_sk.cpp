@@ -286,13 +286,6 @@ std::unordered_map<std::string, module_t::creator_func_t, string_hash,
                    std::equal_to<>>
     module_t::gMap;
 
-void module_t::register_module_func(std::string name,
-                                    module_t::creator_func_t func) {
-  if (auto it = gMap.find(name); it == gMap.end()) {
-    gMap[std::move(name)] = func;
-  }
-}
-
 module_base_t *module_t::create(std::string_view name) {
   if (auto it = gMap.find(name); it != gMap.end()) {
     return it->second();
